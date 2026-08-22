@@ -6,7 +6,8 @@ services:
     entrypoint: ["/bin/sh", "/scripts/wait-tun0-and-start.sh"]
     environment:
       TZ: ${TZ:-UTC}
-      WEBPASSWORD: ${PIHOLE_WEBPASSWORD}
+      # Pi-hole v6: WEBPASSWORD is ignored — use FTLCONF_webserver_api_password
+      FTLCONF_webserver_api_password: ${PIHOLE_WEBPASSWORD}
       FTLCONF_dns_listeningMode: 'BIND'
       FTLCONF_dns_interface: ${PIHOLE_DNS_INTERFACE}
       FTLCONF_webserver_port: ${PIHOLE_WEB_PORT:-8080}

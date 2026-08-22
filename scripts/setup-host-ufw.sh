@@ -121,6 +121,9 @@ echo "[ufw] Pi-hole on ${TCP_TUN_DEV}"
 ufw_allow allow in on "$TCP_TUN_DEV" to any port 53 proto udp comment "Pi-hole DNS ${TCP_TUN_DEV}"
 ufw_allow allow in on "$TCP_TUN_DEV" to any port 53 proto tcp comment "Pi-hole DNS ${TCP_TUN_DEV}"
 ufw_allow allow in on "$TCP_TUN_DEV" to any port 8080 proto tcp comment "Pi-hole admin ${TCP_TUN_DEV}"
+echo "[ufw] Pi-hole API from docker bridges (Xray collector → ${PIHOLE_DNS_IP})"
+ufw_allow allow from "$DOCKER_BRIDGE_CIDR" to "$PIHOLE_DNS_IP" port "${PIHOLE_WEB_PORT:-8080}" proto tcp comment 'pihole api docker-bridge'
+ufw_allow allow from 172.16.0.0/12 to "$PIHOLE_DNS_IP" port "${PIHOLE_WEB_PORT:-8080}" proto tcp comment 'pihole api docker-range'
 
 echo "[ufw] DNS: UDP pool → Pi-hole on TCP .1"
 ufw_allow allow from "$UDP_CIDR" to "$PIHOLE_DNS_IP" port 53 proto udp comment "vpn-dns-udp-${UDP_VPN_SUBNET}"
