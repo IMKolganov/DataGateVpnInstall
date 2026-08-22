@@ -288,6 +288,19 @@ load_env() {
     die "TCP_VPN_SUBNET and UDP_VPN_SUBNET must be different"
   fi
 
+  if is_true "${INSTALL_XRAY:-false}"; then
+    local id_prefix="${XRAY_DNS_IDENTITY_SUBNET%/*}"
+    id_prefix="${id_prefix%.*}"
+    local tcp_prefix="${TCP_VPN_SUBNET%.*}"
+    local udp_prefix="${UDP_VPN_SUBNET%.*}"
+    if [[ "$id_prefix" == "$tcp_prefix" || "$id_prefix" == "$udp_prefix" ]]; then
+      die "XRAY_DNS_IDENTITY_SUBNET (${XRAY_DNS_IDENTITY_SUBNET}) must not share the same /24 as TCP or UDP VPN subnets"
+    fi
+    if [[ ! "$XRAY_DNS_IDENTITY_SUBNET" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$ ]]; then
+      die "XRAY_DNS_IDENTITY_SUBNET must look like 10.80.1.0/24 (got: $XRAY_DNS_IDENTITY_SUBNET)"
+    fi
+  fi
+
   if is_true "${ISSUE_CERTS:-true}" && [[ "$SKIP_CERTS" -eq 0 ]]; then
     reject_placeholder CERTBOT_EMAIL "${CERTBOT_EMAIL:-}"
   fi
@@ -425,6 +438,7 @@ write_host_env() {
 TCP_VPN_SUBNET=${TCP_VPN_SUBNET}
 UDP_VPN_SUBNET=${UDP_VPN_SUBNET}
 PIHOLE_DNS_IP=${PIHOLE_DNS_IP}
+PIHOLE_WEB_PORT=${PIHOLE_WEB_PORT:-8080}
 TCP_TUN_DEV=${TCP_TUN_DEV}
 UDP_TUN_DEV=${UDP_TUN_DEV}
 TCP_PORT=${TCP_PORT}
@@ -895,7 +909,10 @@ setup_xray_dns_identity_route() {
     route_env="${INSTALL_HOME}/site.env"
   fi
   local route_script="${INSTALL_HOME}/host/setup-xray-dns-identity-route.sh"
-  [[ -x "$route_script" ]] || die "missing $route_script — re-run render or install"
+  if [[ ! -x "$route_script" ]]; then
+    warn "missing $route_script — re-run render or install"
+    return 1
+  fi
   ENV_FILE="$route_env" "$route_script"
 }
 

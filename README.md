@@ -217,4 +217,5 @@ Local smoke test (developer machine):
 
 ```bash
 ./scripts/smoke-test-local.sh
+./scripts/verify-installer.sh
 ```

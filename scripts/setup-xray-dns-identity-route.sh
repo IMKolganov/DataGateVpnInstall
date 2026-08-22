@@ -29,12 +29,17 @@ set -a
 source "$ENV_FILE"
 set +a
 
-[[ "$(id -u)" -eq 0 ]] || die "run as root"
-
 : "${XRAY_DNS_IDENTITY_SUBNET:?XRAY_DNS_IDENTITY_SUBNET required}"
 
-if [[ ! "$XRAY_DNS_IDENTITY_SUBNET" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+if [[ ! "$XRAY_DNS_IDENTITY_SUBNET" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$ ]]; then
   die "XRAY_DNS_IDENTITY_SUBNET must look like 10.80.1.0/24 (got: $XRAY_DNS_IDENTITY_SUBNET)"
+fi
+
+[[ "$(id -u)" -eq 0 ]] || die "run as root"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[xray-dns-route] ERROR: docker not found" >&2
+  exit 1
 fi
 
 CONTAINER="${XRAY_CONTAINER_NAME:-datagate-monitor-xray}"

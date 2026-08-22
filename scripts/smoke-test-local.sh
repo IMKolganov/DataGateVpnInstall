@@ -154,20 +154,36 @@ nginx_test() {
 
 check_xray_host_assets() {
   local home="$1"
-  [[ -x "$home/host/setup-xray-dns-identity-route.sh" ]] \
-    && pass "xray route script" || fail "xray route script missing"
-  [[ -f "$home/host/datagate-xray-dns-route.service" ]] \
-    && pass "xray route systemd unit rendered" || fail "xray route systemd unit missing"
+  if [[ -x "$home/host/setup-xray-dns-identity-route.sh" ]]; then
+    pass "xray route script"
+  else
+    fail "xray route script missing"
+  fi
+  if [[ -f "$home/host/datagate-xray-dns-route.service" ]]; then
+    pass "xray route systemd unit rendered"
+  else
+    fail "xray route systemd unit missing"
+  fi
   if grep -qE '__[A-Z0-9_]+__' "$home/host/datagate-xray-dns-route.service" 2>/dev/null; then
     fail "placeholders in datagate-xray-dns-route.service"
   else
     pass "xray route unit placeholders resolved"
   fi
-  grep -q 'XRAY_DNS_IDENTITY_SUBNET=' "$home/host/.env" \
-    && pass "host/.env has identity subnet" || fail "host/.env missing identity subnet"
-  [[ -f "$home/site.env" ]] && pass "site.env copied" || fail "site.env missing"
-  grep -q 'ExecStart=.*/host/setup-xray-dns-identity-route.sh' "$home/host/datagate-xray-dns-route.service" \
-    && pass "systemd ExecStart points to host script" || fail "systemd ExecStart wrong"
+  if grep -q 'XRAY_DNS_IDENTITY_SUBNET=' "$home/host/.env"; then
+    pass "host/.env has identity subnet"
+  else
+    fail "host/.env missing identity subnet"
+  fi
+  if [[ -f "$home/site.env" ]]; then
+    pass "site.env copied"
+  else
+    fail "site.env missing"
+  fi
+  if grep -q 'ExecStart=.*/host/setup-xray-dns-identity-route.sh' "$home/host/datagate-xray-dns-route.service"; then
+    pass "systemd ExecStart points to host script"
+  else
+    fail "systemd ExecStart wrong"
+  fi
 }
 
 compose_config() {
