@@ -619,6 +619,15 @@ XRAY_API_HTTPS_PORT=${XRAY_API_HTTPS_PORT:-9443}
 EOF
 }
 
+sync_xray_dns_route_assets() {
+  [[ -n "${XRAY_DNS_IDENTITY_SUBNET:-}" ]] || return 0
+  local home="$INSTALL_HOME"
+  mkdir -p "$home/host"
+  cp "$SCRIPT_DIR/setup-xray-dns-identity-route.sh" "$home/host/setup-xray-dns-identity-route.sh"
+  chmod +x "$home/host/setup-xray-dns-identity-route.sh"
+  render_file "$TEMPLATES/host/datagate-xray-dns-route.service" "$home/host/datagate-xray-dns-route.service"
+}
+
 write_xray_env() {
   local dest="$1"
   local nginx_certs="${NGINX_CERTBOT_CONF:-$INSTALL_HOME/nginx-docker/certbot/conf}"
@@ -732,9 +741,7 @@ render_stacks() {
     mkdir -p "$home/datagate-monitor-xray/data/xray_data"
     cp "$TEMPLATES/xray/docker-compose.yml" "$home/datagate-monitor-xray/docker-compose.yml"
     write_xray_env "$home/datagate-monitor-xray/.env"
-    cp "$SCRIPT_DIR/setup-xray-dns-identity-route.sh" "$home/host/setup-xray-dns-identity-route.sh"
-    chmod +x "$home/host/setup-xray-dns-identity-route.sh"
-    render_file "$TEMPLATES/host/datagate-xray-dns-route.service" "$home/host/datagate-xray-dns-route.service"
+    sync_xray_dns_route_assets
   fi
 
   if [[ -n "${SUDO_USER:-}" ]] && id "$SUDO_USER" >/dev/null 2>&1; then
@@ -768,6 +775,7 @@ ensure_docker() {
 
 setup_ufw() {
   info "Applying UFW + sysctl"
+  export INSTALLER_SSH_CLIENT_IP
   ENV_FILE="$INSTALL_HOME/host/.env" "$SCRIPT_DIR/setup-host-ufw.sh"
 }
 
@@ -874,7 +882,9 @@ start_xray() {
     die "missing $cert — issue certs before starting Xray"
   fi
   (cd "$INSTALL_HOME/datagate-monitor-xray" && docker compose pull && docker compose up -d)
-  setup_xray_dns_identity_route || warn "xray identity route not applied — run host/setup-xray-dns-identity-route.sh after xray is up"
+  sync_xray_dns_route_assets
+  sleep 2
+  setup_xray_dns_identity_route || warn "xray identity route not applied — run: sudo systemctl start datagate-xray-dns-route.service"
   install_xray_dns_route_service
 }
 
@@ -884,13 +894,20 @@ setup_xray_dns_identity_route() {
   if [[ -f "${INSTALL_HOME}/site.env" ]]; then
     route_env="${INSTALL_HOME}/site.env"
   fi
-  ENV_FILE="$route_env" "$SCRIPT_DIR/setup-xray-dns-identity-route.sh"
+  local route_script="${INSTALL_HOME}/host/setup-xray-dns-identity-route.sh"
+  [[ -x "$route_script" ]] || die "missing $route_script — re-run render or install"
+  ENV_FILE="$route_env" "$route_script"
 }
 
 install_xray_dns_route_service() {
   [[ -n "${XRAY_DNS_IDENTITY_SUBNET:-}" ]] || return 0
+  sync_xray_dns_route_assets
   local unit_src="$INSTALL_HOME/host/datagate-xray-dns-route.service"
   [[ -f "$unit_src" ]] || return 0
+  if grep -qE '__[A-Z0-9_]+__' "$unit_src"; then
+    warn "unresolved placeholders in $unit_src — fix INSTALL_HOME in site.env and re-render"
+    return 0
+  fi
   info "Enabling systemd unit for Xray DNS identity route (survives reboot)"
   install -m 0644 "$unit_src" /etc/systemd/system/datagate-xray-dns-route.service
   systemctl daemon-reload

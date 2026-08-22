@@ -155,6 +155,12 @@ Two new servers → **different** VPN + Xray identity subnets on each.
 
 After `docker compose up --force-recreate` on xray: `sudo systemctl start datagate-xray-dns-route.service`
 
+Re-run UFW after enabling Xray on an existing host (identity rules need `XRAY_DNS_IDENTITY_SUBNET` in `host/.env`):
+
+```bash
+sudo INSTALLER_SSH_CLIENT_IP=YOUR_IP ENV_FILE=~/host/.env ./scripts/setup-host-ufw.sh
+```
+
 ## Useful flags
 
 ```bash

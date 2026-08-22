@@ -33,6 +33,10 @@ set +a
 
 : "${XRAY_DNS_IDENTITY_SUBNET:?XRAY_DNS_IDENTITY_SUBNET required}"
 
+if [[ ! "$XRAY_DNS_IDENTITY_SUBNET" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+  die "XRAY_DNS_IDENTITY_SUBNET must look like 10.80.1.0/24 (got: $XRAY_DNS_IDENTITY_SUBNET)"
+fi
+
 CONTAINER="${XRAY_CONTAINER_NAME:-datagate-monitor-xray}"
 
 wait_for_container_ip() {
@@ -51,8 +55,8 @@ wait_for_container_ip() {
 }
 
 if ! wait_for_container_ip; then
-  echo "[xray-dns-route] container $CONTAINER not ready within ${XRAY_DNS_ROUTE_WAIT_SECS:-90}s — skip"
-  exit 0
+  echo "[xray-dns-route] ERROR: container $CONTAINER not ready within ${XRAY_DNS_ROUTE_WAIT_SECS:-90}s" >&2
+  exit 1
 fi
 
 net_name="$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' "$CONTAINER")"

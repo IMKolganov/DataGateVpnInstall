@@ -26,10 +26,15 @@ is_ipv4() {
 [[ "$(id -u)" -eq 0 ]] || die "run as root: sudo ENV_FILE=... $0"
 
 if [[ -f "$ENV_FILE" ]]; then
+  _installer_ssh_ip="${INSTALLER_SSH_CLIENT_IP:-}"
   set -a
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
+  # Prefer live installer SSH IP over empty/stale host/.env snapshot
+  if [[ -n "$_installer_ssh_ip" ]] && is_ipv4 "$_installer_ssh_ip"; then
+    INSTALLER_SSH_CLIENT_IP="$_installer_ssh_ip"
+  fi
 else
   die "env file not found: $ENV_FILE"
 fi

@@ -152,6 +152,24 @@ nginx_test() {
   fi
 }
 
+check_xray_host_assets() {
+  local home="$1"
+  [[ -x "$home/host/setup-xray-dns-identity-route.sh" ]] \
+    && pass "xray route script" || fail "xray route script missing"
+  [[ -f "$home/host/datagate-xray-dns-route.service" ]] \
+    && pass "xray route systemd unit rendered" || fail "xray route systemd unit missing"
+  if grep -qE '__[A-Z0-9_]+__' "$home/host/datagate-xray-dns-route.service" 2>/dev/null; then
+    fail "placeholders in datagate-xray-dns-route.service"
+  else
+    pass "xray route unit placeholders resolved"
+  fi
+  grep -q 'XRAY_DNS_IDENTITY_SUBNET=' "$home/host/.env" \
+    && pass "host/.env has identity subnet" || fail "host/.env missing identity subnet"
+  [[ -f "$home/site.env" ]] && pass "site.env copied" || fail "site.env missing"
+  grep -q 'ExecStart=.*/host/setup-xray-dns-identity-route.sh' "$home/host/datagate-xray-dns-route.service" \
+    && pass "systemd ExecStart points to host script" || fail "systemd ExecStart wrong"
+}
+
 compose_config() {
   local dir="$1" name="$2"
   if (cd "$dir" && docker compose --env-file .env config -q 2>/dev/null); then
@@ -174,6 +192,7 @@ check_no_placeholders "$RENDER_NO_XRAY"
 echo "=== render OpenVPN + Xray ==="
 render "$ENV_XRAY"
 check_no_placeholders "$RENDER_XRAY"
+check_xray_host_assets "$RENDER_XRAY"
 
 echo "=== nginx -t OpenVPN-only ==="
 make_dummy_certs "$RENDER_NO_XRAY/nginx-docker/certbot/conf" \
