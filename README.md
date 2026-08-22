@@ -132,6 +132,29 @@ If `INSTALL_XRAY=true` also set `XRAY_DOMAIN`, `XRAY_DNS_IDENTITY_SUBNET`, `XRAY
 
 Two new servers → **different** VPN + Xray identity subnets on each.
 
+## Adding another VPN host (checklist)
+
+1. Copy this `install/vpns` kit to the new VPS (or `git pull` in your installer clone).
+2. `cp site.env.example site.env` — set **unique** subnets:
+   - `TCP_VPN_SUBNET` (e.g. `10.51.48.0`)
+   - `UDP_VPN_SUBNET` (e.g. `10.51.50.0`)
+   - `XRAY_DNS_IDENTITY_SUBNET` (e.g. `10.80.3.0/24`)
+3. `INSTALL_HOME=/home/YOURUSER` — stacks become `~/openvpn-tcp-wss`, `~/datagate-monitor-xray`, etc.
+4. DNS A-records for UDP/TCP/Xray domains → `PUBLIC_IP`.
+5. `sudo ./scripts/install-vpn-host.sh` (full run).
+6. Installer automatically:
+   - `XRAY_DNS_IDENTITY_IFACE=eth0` in xray `.env`
+   - UFW: docker + **identity subnet** → Pi-hole `:53` (sendThrough uses identity IPs as source)
+   - host route `identity subnet → xray container` + `datagate-xray-dns-route.service` on reboot
+7. **Dashboard** (after backend/frontend deploy):
+   - Register UDP/TCP/Xray ApiUrls
+   - Xray export template: JSON with `dnsServers` (e.g. `["10.51.x.1"]`)
+   - Pi-hole: Base URL `http://{TCP}.1:8080`, subnet prefix `10.80.x.`
+   - Re-issue client links
+8. Client: Private DNS **Off**, DNS through tunnel.
+
+After `docker compose up --force-recreate` on xray: `sudo systemctl start datagate-xray-dns-route.service`
+
 ## Useful flags
 
 ```bash
@@ -177,6 +200,7 @@ sudo ./scripts/install-vpn-host.sh
 |---------|--------|
 | certbot fails | `dig +short DOMAIN` must equal `PUBLIC_IP`; port 80 open |
 | Xray Pi-hole step 4 timeout | Xray Base URL must be `http://{PIHOLE_DNS_IP}:8080` (e.g. `10.51.44.1`), not `172.17.0.1` — Pi-hole listens on tun-tcp, not docker0 |
+| Xray DNS fails / step 5 forwarded=0 | `XRAY_DNS_IDENTITY_IFACE=eth0`; host route for identity subnet → xray container; UFW allow **identity subnet** (e.g. `10.80.2.0/24`) → `{PIHOLE_DNS_IP}:53` (not only docker CIDR — sendThrough uses identity IPs as source); re-issue link after sync |
 | Pi-hole exits | OpenVPN TCP must be Up first; `docker logs datagate-pihole` |
 | no SSH after UFW | reconnect from `ADMIN_SSH_IP` or console; installer also allows session IP |
 | no SSH after 2FA | console/VNC: restore `/etc/ssh/sshd_config.bak.*` and `/etc/pam.d/sshd.bak.*`, `systemctl restart ssh` |

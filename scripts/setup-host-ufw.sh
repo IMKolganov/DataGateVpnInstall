@@ -124,6 +124,21 @@ ufw_allow allow in on "$TCP_TUN_DEV" to any port 8080 proto tcp comment "Pi-hole
 echo "[ufw] Pi-hole API from docker bridges (Xray collector → ${PIHOLE_DNS_IP})"
 ufw_allow allow from "$DOCKER_BRIDGE_CIDR" to "$PIHOLE_DNS_IP" port "${PIHOLE_WEB_PORT:-8080}" proto tcp comment 'pihole api docker-bridge'
 ufw_allow allow from 172.16.0.0/12 to "$PIHOLE_DNS_IP" port "${PIHOLE_WEB_PORT:-8080}" proto tcp comment 'pihole api docker-range'
+if [[ -n "${XRAY_DNS_IDENTITY_SUBNET:-}" ]]; then
+  echo "[ufw] Pi-hole DNS from Docker bridge (Xray → ${PIHOLE_DNS_IP}:53)"
+  ufw_allow allow from "$DOCKER_BRIDGE_CIDR" to "$PIHOLE_DNS_IP" port 53 proto udp comment 'xray-dns-udp-docker'
+  ufw_allow allow from "$DOCKER_BRIDGE_CIDR" to "$PIHOLE_DNS_IP" port 53 proto tcp comment 'xray-dns-tcp-docker'
+  ufw_allow allow from 172.16.0.0/12 to "$PIHOLE_DNS_IP" port 53 proto udp comment 'xray-dns-udp-docker-range'
+  ufw_allow allow from 172.16.0.0/12 to "$PIHOLE_DNS_IP" port 53 proto tcp comment 'xray-dns-tcp-docker-range'
+  echo "[ufw] Pi-hole DNS from Xray identity pool (sendThrough ${XRAY_DNS_IDENTITY_SUBNET} → ${PIHOLE_DNS_IP}:53)"
+  ufw_allow allow from "$XRAY_DNS_IDENTITY_SUBNET" to "$PIHOLE_DNS_IP" port 53 proto udp comment 'xray-dns-udp-identity'
+  ufw_allow allow from "$XRAY_DNS_IDENTITY_SUBNET" to "$PIHOLE_DNS_IP" port 53 proto tcp comment 'xray-dns-tcp-identity'
+  echo "[ufw] forward: identity pool ↔ Pi-hole / bridge"
+  ufw_allow route allow from "$XRAY_DNS_IDENTITY_SUBNET" to "$PIHOLE_DNS_IP" comment 'xray-identity-to-pihole'
+  ufw_allow route allow from "$PIHOLE_DNS_IP" to "$XRAY_DNS_IDENTITY_SUBNET" comment 'pihole-to-xray-identity'
+  ufw_allow route allow from "$XRAY_DNS_IDENTITY_SUBNET" to any comment 'xray-identity-out'
+  ufw_allow route allow from any to "$XRAY_DNS_IDENTITY_SUBNET" comment 'xray-identity-in'
+fi
 
 echo "[ufw] DNS: UDP pool → Pi-hole on TCP .1"
 ufw_allow allow from "$UDP_CIDR" to "$PIHOLE_DNS_IP" port 53 proto udp comment "vpn-dns-udp-${UDP_VPN_SUBNET}"

@@ -1,0 +1,14 @@
+[Unit]
+Description=DataGate route for Xray DNS identity subnet (Pi-hole replies)
+Documentation=https://github.com/imkolganov/DataGateVpnInstall
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=ENV_FILE=__INSTALL_HOME__/site.env
+ExecStart=__INSTALL_HOME__/host/setup-xray-dns-identity-route.sh
+
+[Install]
+WantedBy=multi-user.target

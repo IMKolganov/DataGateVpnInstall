@@ -200,7 +200,8 @@ XRAY_DNS2=${tcp_dns}
 XRAY_PIHOLE_BASE_URL=http://${tcp_dns}:8080
 XRAY_DNS_IDENTITY_ENABLED=true
 XRAY_DNS_IDENTITY_SUBNET=${xray_subnet}/24
-XRAY_DNS_IDENTITY_IFACE=${WAN_IF}
+# Xray runs in Docker — identity aliases must be on container eth0, not host WAN_IF.
+XRAY_DNS_IDENTITY_IFACE=eth0
 XRAY_PIHOLE_CLIENT_SUBNET_PREFIX=${xray_prefix}
 XRAY_PIHOLE_EXCLUDE_PREFIXES=${TCP_VPN_SUBNET%.*}.,${UDP_VPN_SUBNET%.*}.
 NGINX_CERTBOT_CONF=${INSTALL_HOME}/nginx-docker/certbot/conf
@@ -299,7 +300,7 @@ load_env() {
     : "${NGINX_CERTBOT_CONF:=$INSTALL_HOME/nginx-docker/certbot/conf}"
     : "${XRAY_PIHOLE_EXCLUDE_PREFIXES:=${TCP_VPN_SUBNET%.*}.,${UDP_VPN_SUBNET%.*}.}"
     : "${XRAY_PIHOLE_CLIENT_SUBNET_PREFIX:=${XRAY_DNS_IDENTITY_SUBNET%.*}.}"
-    : "${XRAY_DNS_IDENTITY_IFACE:=$WAN_IF}"
+    : "${XRAY_DNS_IDENTITY_IFACE:=eth0}"
   fi
 
   # Remember SSH client for UFW safety net
@@ -443,6 +444,7 @@ EOF
     cat >>"$dest" <<EOF
 XRAY_API_HTTPS_PORT=${XRAY_API_HTTPS_PORT:-9443}
 XRAY_API_ALLOW_IPS=${XRAY_API_ALLOW_IPS:-${DASHBOARD_API_IP}}
+XRAY_DNS_IDENTITY_SUBNET=${XRAY_DNS_IDENTITY_SUBNET}
 EOF
   fi
 }
@@ -639,7 +641,7 @@ XRAY_DNS2=${XRAY_DNS2:-$pihole_dns}
 XRAY_PIHOLE_BASE_URL=${XRAY_PIHOLE_BASE_URL:-http://${PIHOLE_DNS_IP}:${PIHOLE_WEB_PORT:-8080}}
 XRAY_DNS_IDENTITY_ENABLED=${XRAY_DNS_IDENTITY_ENABLED:-true}
 XRAY_DNS_IDENTITY_SUBNET=${XRAY_DNS_IDENTITY_SUBNET}
-XRAY_DNS_IDENTITY_IFACE=${XRAY_DNS_IDENTITY_IFACE:-${WAN_IF}}
+XRAY_DNS_IDENTITY_IFACE=${XRAY_DNS_IDENTITY_IFACE:-eth0}
 XRAY_PIHOLE_CLIENT_SUBNET_PREFIX=${prefix}
 XRAY_PIHOLE_EXCLUDE_PREFIXES=${exclude}
 PIHOLE_ENABLED=true
@@ -723,18 +725,22 @@ render_stacks() {
   fi
 
   write_host_env "$home/host/.env"
+  cp "$ENV_FILE" "$home/site.env"
   cp "$ENV_FILE" "$home/site.env.installed"
 
   if is_true "${INSTALL_XRAY:-false}"; then
     mkdir -p "$home/datagate-monitor-xray/data/xray_data"
     cp "$TEMPLATES/xray/docker-compose.yml" "$home/datagate-monitor-xray/docker-compose.yml"
     write_xray_env "$home/datagate-monitor-xray/.env"
+    cp "$SCRIPT_DIR/setup-xray-dns-identity-route.sh" "$home/host/setup-xray-dns-identity-route.sh"
+    chmod +x "$home/host/setup-xray-dns-identity-route.sh"
+    render_file "$TEMPLATES/host/datagate-xray-dns-route.service" "$home/host/datagate-xray-dns-route.service"
   fi
 
   if [[ -n "${SUDO_USER:-}" ]] && id "$SUDO_USER" >/dev/null 2>&1; then
     chown -R "$SUDO_USER:$SUDO_USER" \
       "$home/openvpn-tcp-wss" "$home/openvpn-udp-wss" "$home/pi-hole" "$home/nginx-docker" "$home/host" \
-      "$home/site.env.installed" 2>/dev/null || true
+      "$home/site.env" "$home/site.env.installed" 2>/dev/null || true
     if is_true "${INSTALL_XRAY:-false}" && [[ -d "$home/datagate-monitor-xray" ]]; then
       chown -R "$SUDO_USER:$SUDO_USER" "$home/datagate-monitor-xray" 2>/dev/null || true
     fi
@@ -868,6 +874,28 @@ start_xray() {
     die "missing $cert — issue certs before starting Xray"
   fi
   (cd "$INSTALL_HOME/datagate-monitor-xray" && docker compose pull && docker compose up -d)
+  setup_xray_dns_identity_route || warn "xray identity route not applied — run host/setup-xray-dns-identity-route.sh after xray is up"
+  install_xray_dns_route_service
+}
+
+setup_xray_dns_identity_route() {
+  [[ -n "${XRAY_DNS_IDENTITY_SUBNET:-}" ]] || return 0
+  local route_env="$ENV_FILE"
+  if [[ -f "${INSTALL_HOME}/site.env" ]]; then
+    route_env="${INSTALL_HOME}/site.env"
+  fi
+  ENV_FILE="$route_env" "$SCRIPT_DIR/setup-xray-dns-identity-route.sh"
+}
+
+install_xray_dns_route_service() {
+  [[ -n "${XRAY_DNS_IDENTITY_SUBNET:-}" ]] || return 0
+  local unit_src="$INSTALL_HOME/host/datagate-xray-dns-route.service"
+  [[ -f "$unit_src" ]] || return 0
+  info "Enabling systemd unit for Xray DNS identity route (survives reboot)"
+  install -m 0644 "$unit_src" /etc/systemd/system/datagate-xray-dns-route.service
+  systemctl daemon-reload
+  systemctl enable datagate-xray-dns-route.service
+  systemctl start datagate-xray-dns-route.service || warn "datagate-xray-dns-route.service start failed — xray may not be up yet"
 }
 
 print_summary() {
@@ -886,6 +914,7 @@ EOF
   Xray VLESS:      ${XRAY_DOMAIN}:443 (SNI → container)
   Xray ApiUrl:     https://${XRAY_DOMAIN}:${XRAY_API_HTTPS_PORT:-9443}
   Xray DNS identity subnet: ${XRAY_DNS_IDENTITY_SUBNET}
+  Xray DNS route:  systemd datagate-xray-dns-route.service (reboot-safe)
 EOF
   fi
   cat <<EOF
