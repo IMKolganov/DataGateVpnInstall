@@ -219,6 +219,12 @@ XRAY_API_HTTPS_PORT=9443
 XRAY_API_ALLOW_IPS=${DASHBOARD_API_IP}
 XRAY_TRANSPORT_MODE=tls
 XRAY_ACCEPT_PROXY_PROTOCOL=true
+# Second VLESS inbound over xHTTP on its own port (own TLS, reached directly, not via nginx).
+# Looks like plain HTTP/2 traffic off :443, which is what Russian DPI currently polices hardest.
+XRAY_XHTTP_ENABLED=true
+XRAY_XHTTP_PORT=2053
+XRAY_XHTTP_PATH=/api/v1/update
+XRAY_XHTTP_MODE=auto
 XRAY_HOST_GATEWAY=172.17.0.1
 XRAY_DNS1=${tcp_dns}
 XRAY_DNS2=${tcp_dns}
@@ -487,6 +493,12 @@ EOF
 
 write_host_env() {
   local dest="$1"
+  # Docker publishes the xHTTP port itself (its iptables rules bypass UFW), but the UFW rule keeps
+  # `ufw status` honest about what is reachable on this host.
+  local extra_tcp_port=""
+  if is_true "${INSTALL_XRAY:-false}" && is_true "${XRAY_XHTTP_ENABLED:-true}"; then
+    extra_tcp_port="${XRAY_XHTTP_PORT:-2053}"
+  fi
   cat >"$dest" <<EOF
 TCP_VPN_SUBNET=${TCP_VPN_SUBNET}
 UDP_VPN_SUBNET=${UDP_VPN_SUBNET}
@@ -505,7 +517,7 @@ PROMETHEUS_IP=${PROMETHEUS_IP:-}
 DOCKER_BRIDGE_CIDR=${DOCKER_BRIDGE_CIDR}
 NODE_EXPORTER_PORT=${NODE_EXPORTER_PORT:-9100}
 INSTALLER_SSH_CLIENT_IP=${INSTALLER_SSH_CLIENT_IP:-}
-EXTRA_TCP_PORT=
+EXTRA_TCP_PORT=${extra_tcp_port}
 EOF
   if is_true "${INSTALL_XRAY:-false}"; then
     cat >>"$dest" <<EOF
@@ -711,6 +723,10 @@ XRAY_DOMAIN=${XRAY_DOMAIN}
 XRAY_TRANSPORT_MODE=${XRAY_TRANSPORT_MODE:-tls}
 XRAY_ACCEPT_PROXY_PROTOCOL=${XRAY_ACCEPT_PROXY_PROTOCOL:-true}
 XRAY_MANAGER_HOST_PORT=${XRAY_MANAGER_HOST_PORT:-5012}
+XRAY_XHTTP_ENABLED=${XRAY_XHTTP_ENABLED:-true}
+XRAY_XHTTP_PORT=${XRAY_XHTTP_PORT:-2053}
+XRAY_XHTTP_PATH=${XRAY_XHTTP_PATH:-/api/v1/update}
+XRAY_XHTTP_MODE=${XRAY_XHTTP_MODE:-auto}
 XRAY_HOST_GATEWAY=${gw}
 XRAY_DNS1=${pihole_dns}
 XRAY_DNS2=${pihole_dns}

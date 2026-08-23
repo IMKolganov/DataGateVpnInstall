@@ -29,6 +29,12 @@ services:
       XRAY_TLS_KEY_FILE: /etc/letsencrypt/live/${XRAY_DOMAIN}/privkey.pem
       # nginx stream must send PROXY protocol when this is true
       XRAY_ACCEPT_PROXY_PROTOCOL: ${XRAY_ACCEPT_PROXY_PROTOCOL:-true}
+      # Extra VLESS inbound over xHTTP: own TLS, reached directly on XRAY_XHTTP_PORT (no nginx,
+      # so no PROXY protocol). Skipped by render-config.sh if it cannot be built safely.
+      XRAY_XHTTP_ENABLED: ${XRAY_XHTTP_ENABLED:-false}
+      XRAY_XHTTP_PORT: ${XRAY_XHTTP_PORT:-2053}
+      XRAY_XHTTP_PATH: ${XRAY_XHTTP_PATH:-/api/v1/update}
+      XRAY_XHTTP_MODE: ${XRAY_XHTTP_MODE:-auto}
 
       # Pi-hole on host (OpenVPN netns) — reach via docker bridge / host.docker.internal
       DNS1: ${XRAY_DNS1}
@@ -45,6 +51,9 @@ services:
       # Manager API — localhost only; nginx :9443 proxies here for dashboard
       # Use a free host port (not OpenVPN 5010/5011)
       - "127.0.0.1:${XRAY_MANAGER_HOST_PORT}:5010/tcp"
+      # xHTTP inbound — public, bypasses nginx. Docker's own iptables rules make this reachable
+      # regardless of UFW. Refuses connections while XRAY_XHTTP_ENABLED is false (nothing listens).
+      - "${XRAY_XHTTP_PORT:-2053}:${XRAY_XHTTP_PORT:-2053}/tcp"
 
 networks:
   xray_network:

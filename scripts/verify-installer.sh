@@ -159,7 +159,7 @@ else
   pass "rejects placeholder XRAY_API_ALLOW_IPS"
 fi
 
-echo "=== [8/9] critical path guards (xray net labels, SSH IP under sudo, post-install DNS) ==="
+echo "=== [8/10] critical path guards (xray net labels, SSH IP under sudo, post-install DNS) ==="
 INSTALLER="$ROOT/scripts/install-vpn-host.sh"
 POST="$ROOT/scripts/post-install-check.sh"
 
@@ -183,7 +183,7 @@ else
   fail "post-install PIHOLE_DNS_IP not forced from TCP subnet"
 fi
 
-echo "=== [9/9] docker network label recreate (if docker available) ==="
+echo "=== [9/10] docker network label recreate (if docker available) ==="
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   n="datagate-verify-xray-net-$$"
   docker network rm "$n" >/dev/null 2>&1 || true
@@ -208,6 +208,79 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   fi
 else
   echo "SKIP: docker network label test (docker not available)"
+fi
+
+echo "=== [10/10] xHTTP extra inbound (render-config.sh) ==="
+xenv_xhttp="$home/datagate-monitor-xray/.env"
+if grep -q '^XRAY_XHTTP_ENABLED=true' "$xenv_xhttp" \
+  && grep -q '^XRAY_XHTTP_PORT=2053' "$xenv_xhttp"; then
+  pass "xray .env enables xHTTP inbound"
+else
+  fail "xray .env missing XRAY_XHTTP_* ($(grep XHTTP "$xenv_xhttp" || true))"
+fi
+
+# UFW must know about the same port the container publishes.
+if grep -q '^EXTRA_TCP_PORT=2053' "$home/host/.env"; then
+  pass "host/.env opens the xHTTP port for UFW"
+else
+  fail "host/.env EXTRA_TCP_PORT does not match XRAY_XHTTP_PORT ($(grep EXTRA_TCP_PORT "$home/host/.env" || true))"
+fi
+
+# render-config.sh lives in the xray repo — absent when DataGateVpnInstall is checked out alone.
+RENDER="$ROOT/../../xray/scripts/xray/render-config.sh"
+if [[ -f "$RENDER" ]] && command -v jq >/dev/null 2>&1; then
+  xd="$TEST_ROOT/xray-render"
+  rm -rf "$xd"
+  mkdir -p "$xd"
+  # Contents do not matter: without the xray binary validate_config only checks structure.
+  : >"$xd/fullchain.pem"
+  : >"$xd/privkey.pem"
+  cfg="$xd/config.json"
+  render_env=(env
+    CONFIG_PATH="$cfg" ACCESS_LOG="$xd/access.log" ERROR_LOG="$xd/error.log"
+    PORT=443 DNS1=1.1.1.1 DNS2=8.8.8.8
+    XRAY_MGMT_HOST=127.0.0.1 XRAY_MGMT_PORT=10085 INBOUND_TAG=vless-in
+    XRAY_TRANSPORT_MODE=tls XRAY_ACCEPT_PROXY_PROTOCOL=true
+    XRAY_TLS_CERT_FILE="$xd/fullchain.pem" XRAY_TLS_KEY_FILE="$xd/privkey.pem")
+  vless_count() { jq '[.inbounds[] | select(.protocol == "vless")] | length' "$cfg"; }
+
+  "${render_env[@]}" XRAY_XHTTP_ENABLED=false bash "$RENDER" >/dev/null
+  [[ "$(vless_count)" == "1" ]] \
+    && pass "disabled xHTTP leaves a single VLESS inbound" \
+    || fail "disabled xHTTP changed the inbound count ($(vless_count))"
+
+  "${render_env[@]}" XRAY_XHTTP_ENABLED=true XRAY_XHTTP_PORT=2053 XRAY_XHTTP_PATH=/api/v1/update bash "$RENDER" >/dev/null
+  if [[ "$(vless_count)" == "2" ]] \
+    && [[ "$(jq -r '.inbounds[] | select(.tag == "vless-xhttp-in") | .streamSettings.network' "$cfg")" == "xhttp" ]] \
+    && [[ "$(jq -r '.inbounds[] | select(.tag == "vless-xhttp-in") | .streamSettings.security' "$cfg")" == "tls" ]] \
+    && [[ "$(jq -r '.inbounds[] | select(.tag == "vless-xhttp-in") | .streamSettings.xhttpSettings.path' "$cfg")" == "/api/v1/update" ]] \
+    && [[ "$(jq -r '.inbounds[] | select(.tag == "vless-xhttp-in") | .port' "$cfg")" == "2053" ]]; then
+    pass "xHTTP inbound rendered next to the primary one"
+  else
+    fail "xHTTP inbound missing or malformed ($(jq -c '[.inbounds[].tag]' "$cfg"))"
+  fi
+
+  # Reached directly, so PROXY protocol must stay off — otherwise every client handshake fails.
+  [[ "$(jq -r '.inbounds[] | select(.tag == "vless-xhttp-in") | .streamSettings.sockopt.acceptProxyProtocol // false' "$cfg")" == "false" ]] \
+    && pass "xHTTP inbound has no acceptProxyProtocol" \
+    || fail "xHTTP inbound got acceptProxyProtocol (nginx is not in front of it)"
+
+  # The primary inbound must survive the patch untouched.
+  [[ "$(jq -r '.inbounds[] | select(.tag == "vless-in") | .streamSettings.sockopt.acceptProxyProtocol' "$cfg")" == "true" ]] \
+    && pass "primary inbound keeps acceptProxyProtocol" \
+    || fail "primary inbound lost acceptProxyProtocol"
+
+  "${render_env[@]}" XRAY_XHTTP_ENABLED=true XRAY_XHTTP_PORT=443 bash "$RENDER" >/dev/null 2>&1
+  [[ "$(vless_count)" == "1" ]] \
+    && pass "port collision with the primary inbound is skipped" \
+    || fail "xHTTP inbound was added on the primary port"
+
+  "${render_env[@]}" XRAY_XHTTP_ENABLED=true XRAY_XHTTP_PORT=2053 XRAY_TLS_CERT_FILE="$xd/missing.pem" bash "$RENDER" >/dev/null 2>&1
+  [[ "$(vless_count)" == "1" ]] \
+    && pass "missing certificate skips the xHTTP inbound" \
+    || fail "xHTTP inbound was added without a certificate"
+else
+  echo "SKIP: render-config.sh checks (xray repo or jq not available)"
 fi
 
 if [[ "$FAIL" -eq 0 ]]; then
