@@ -72,9 +72,9 @@ XRAY_API_ALLOW_IPS=81.27.110.243,94.237.4.29
 XRAY_TRANSPORT_MODE=tls
 XRAY_ACCEPT_PROXY_PROTOCOL=true
 XRAY_HOST_GATEWAY=172.17.0.1
-XRAY_DNS1=172.17.0.1
-XRAY_DNS2=172.17.0.1
-XRAY_PIHOLE_BASE_URL=http://172.17.0.1:8080
+XRAY_DNS1=10.51.40.1
+XRAY_DNS2=10.51.40.1
+XRAY_PIHOLE_BASE_URL=http://10.51.40.1:8080
 XRAY_DNS_IDENTITY_ENABLED=true
 XRAY_DNS_IDENTITY_SUBNET=10.80.1.0/24
 XRAY_DNS_IDENTITY_IFACE=eth0
@@ -238,6 +238,15 @@ grep -q 'host.docker.internal:5010' "$RENDER_NO_XRAY/nginx-docker/nginx/conf.d/u
   && pass "udp wss upstream" || fail "udp wss upstream"
 grep -q 'network_mode: "container:openvpn-tcp-wss"' "$RENDER_NO_XRAY/pi-hole/docker-compose.yml" \
   && pass "pihole netns" || fail "pihole netns"
+grep -q 'proxy_set_header Authorization' "$RENDER_XRAY/nginx-docker/nginx/conf.d/xray-api.conf" \
+  && pass "xray-api proxies Authorization (dashboard JWT)" || fail "xray-api missing Authorization"
+grep -q 'PIHOLE_BASE_URL=http://10.51.40.1:8080' "$RENDER_XRAY/datagate-monitor-xray/.env" \
+  && pass "xray Pi-hole Base URL is TCP .1 not docker0" || fail "xray Pi-hole Base URL wrong"
+grep -q 'XRAY_DNS_IDENTITY_IFACE=eth0' "$RENDER_XRAY/datagate-monitor-xray/.env" \
+  && pass "XRAY_DNS_IDENTITY_IFACE=eth0" || fail "identity iface not eth0"
+
+echo "=== ssh scenario smoke ==="
+"$ROOT/scripts/smoke-test-ssh-scenarios.sh" || FAIL=1
 
 if [[ "$FAIL" -eq 0 ]]; then
   echo "=== ALL SMOKE TESTS PASSED ==="

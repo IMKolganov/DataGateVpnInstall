@@ -8,9 +8,14 @@
 #   3) Install sshd_config + PAM (pubkey + TOTP; password login disabled)
 #
 # Usage:
+#   sudo ./scripts/setup-host-ssh.sh --user YOURNAME
 #   sudo ./scripts/setup-host-ssh.sh --user YOURNAME --pubkey /path/to/id_ed25519.pub
 #   sudo ./scripts/setup-host-ssh.sh --user YOURNAME --pubkey-from-user ubuntu
 #   sudo ./scripts/setup-host-ssh.sh --apply-sshd-only   # after .google_authenticator exists
+#   sudo ./scripts/setup-host-ssh.sh --user YOURNAME --skip-password
+#
+# Keys already in /home/USER/.ssh/authorized_keys → omit --pubkey (same-file copy is a no-op).
+# Covered by scripts/smoke-test-ssh-scenarios.sh.
 #
 set -euo pipefail
 

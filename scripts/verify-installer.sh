@@ -9,10 +9,13 @@ FAIL=0
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*" >&2; FAIL=1; }
 
-echo "=== [1/6] smoke-test-local.sh ==="
+echo "=== [0/7] smoke-test-ssh-scenarios.sh ==="
+"$ROOT/scripts/smoke-test-ssh-scenarios.sh"
+
+echo "=== [1/7] smoke-test-local.sh ==="
 "$ROOT/scripts/smoke-test-local.sh"
 
-echo "=== [2/6] render xray stack + host/.env fields ==="
+echo "=== [2/7] render xray stack + host/.env fields ==="
 rm -rf "$TEST_ROOT"
 mkdir -p "$TEST_ROOT"
 cat >"$TEST_ROOT/site.env" <<EOF
@@ -57,7 +60,7 @@ else
   fail "site.env missing or wrong identity subnet"
 fi
 
-echo "=== [3/6] route script rejects bad subnet ==="
+echo "=== [3/7] route script rejects bad subnet ==="
 cat >"$TEST_ROOT/site.env.bad" <<EOF
 XRAY_DNS_IDENTITY_SUBNET=not-a-subnet
 EOF
@@ -67,7 +70,7 @@ else
   pass "route script rejects bad subnet"
 fi
 
-echo "=== [4/6] route script fails when xray container absent ==="
+echo "=== [4/7] route script fails when xray container absent ==="
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   if sudo -n true 2>/dev/null; then
     if sudo ENV_FILE="$TEST_ROOT/site.env" XRAY_DNS_ROUTE_WAIT_SECS=4 \
@@ -88,7 +91,7 @@ else
   echo "SKIP: route container test (docker not available)"
 fi
 
-echo "=== [5/6] systemd unit valid ==="
+echo "=== [5/7] systemd unit valid ==="
 unit="$home/host/datagate-xray-dns-route.service"
 if grep -qE '__[A-Z0-9_]+__' "$unit"; then
   fail "placeholders in systemd unit"
@@ -103,7 +106,7 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   fi
 fi
 
-echo "=== [6/6] load_env rejects overlapping identity subnet ==="
+echo "=== [6/7] load_env rejects overlapping identity subnet ==="
 overlap_env="$TEST_ROOT/site.env.overlap"
 cp "$TEST_ROOT/site.env" "$overlap_env"
 sed -i 's/XRAY_DNS_IDENTITY_SUBNET=10.80.5.0\/24/XRAY_DNS_IDENTITY_SUBNET=10.51.40.0\/24/' "$overlap_env"
