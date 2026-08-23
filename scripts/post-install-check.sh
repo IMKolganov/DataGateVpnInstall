@@ -30,9 +30,12 @@ source "$ENV_FILE"
 set +a
 
 : "${INSTALL_HOME:?INSTALL_HOME required in site.env}"
-: "${PIHOLE_DNS_IP:=${TCP_VPN_SUBNET%.*}.1}"
+: "${TCP_VPN_SUBNET:?TCP_VPN_SUBNET required in site.env}"
+# Always derive from TCP subnet — do not trust stale PIHOLE_DNS_IP left in copied site.env.example
+PIHOLE_DNS_IP="${TCP_VPN_SUBNET%.*}.1"
 : "${TCP_API_PORT:=5011}"
 : "${UDP_API_PORT:=5010}"
+: "${PIHOLE_WEB_PORT:=8080}"
 
 echo "=== post-install check ($INSTALL_HOME) ==="
 

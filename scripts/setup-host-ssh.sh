@@ -86,7 +86,13 @@ ensure_user() {
 
 set_password() {
   local u="$1"
-  [[ "$SKIP_PASSWORD" -eq 1 ]] && { warn "skipping password"; return 0; }
+  if [[ "$SKIP_PASSWORD" -eq 1 ]]; then
+    local st
+    st="$(passwd -S "$u" 2>/dev/null | awk '{print $2}')"
+    [[ "$st" == "P" ]] || die "user $u has no usable password (passwd -S → ${st:-unknown}). Run without --skip-password, or: passwd $u"
+    warn "skipping password (already set)"
+    return 0
+  fi
   info "Set a strong password for $u (used for sudo — not for SSH login)"
   passwd "$u"
 }
@@ -101,15 +107,15 @@ install_authorized_keys() {
     key_src="$PUBKEY_FILE"
   elif [[ -n "$PUBKEY_FROM_USER" ]]; then
     key_src="$(getent passwd "$PUBKEY_FROM_USER" | cut -d: -f6)/.ssh/authorized_keys"
+  elif [[ -f "$home/.ssh/authorized_keys" ]] && grep -qE '^(ssh-|ecdsa-)' "$home/.ssh/authorized_keys"; then
+    # Prefer the target user's own keys (common: already provisioned via UpCloud / prior step)
+    key_src="$home/.ssh/authorized_keys"
+  elif [[ -n "${SUDO_USER:-}" && -f "$(getent passwd "$SUDO_USER" | cut -d: -f6)/.ssh/authorized_keys" ]]; then
+    key_src="$(getent passwd "$SUDO_USER" | cut -d: -f6)/.ssh/authorized_keys"
+  elif [[ -f /root/.ssh/authorized_keys ]]; then
+    key_src=/root/.ssh/authorized_keys
   else
-    # Prefer current SSH session owner's keys, else root
-    if [[ -n "${SUDO_USER:-}" && -f "$(getent passwd "$SUDO_USER" | cut -d: -f6)/.ssh/authorized_keys" ]]; then
-      key_src="$(getent passwd "$SUDO_USER" | cut -d: -f6)/.ssh/authorized_keys"
-    elif [[ -f /root/.ssh/authorized_keys ]]; then
-      key_src=/root/.ssh/authorized_keys
-    else
-      die "no SSH pubkey found — pass --pubkey /path/to/id_ed25519.pub or --pubkey-from-user ubuntu"
-    fi
+    die "no SSH pubkey found — pass --pubkey /path/to/id_ed25519.pub or put keys in $home/.ssh/authorized_keys"
   fi
 
   [[ -f "$key_src" ]] || die "pubkey source not found: $key_src"

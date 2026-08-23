@@ -159,6 +159,57 @@ else
   pass "rejects placeholder XRAY_API_ALLOW_IPS"
 fi
 
+echo "=== [8/9] critical path guards (xray net labels, SSH IP under sudo, post-install DNS) ==="
+INSTALLER="$ROOT/scripts/install-vpn-host.sh"
+POST="$ROOT/scripts/post-install-check.sh"
+
+grep -q 'com.docker.compose.network=xray_network' "$INSTALLER" \
+  && pass "ensure_xray_network sets compose network label" \
+  || fail "ensure_xray_network missing compose labels"
+
+grep -q 'ss -Htn state established' "$INSTALLER" \
+  && pass "detect_ssh_client_ip recovers session after sudo env_reset" \
+  || fail "detect_ssh_client_ip missing ss fallback"
+
+# Stale PIHOLE_DNS_IP in site.env must not win over TCP_VPN_SUBNET (post-install false FAIL)
+TCP_VPN_SUBNET=10.51.52.0
+PIHOLE_DNS_IP=10.51.40.1
+# shellcheck disable=SC2034
+PIHOLE_DNS_IP="${TCP_VPN_SUBNET%.*}.1"
+if [[ "$PIHOLE_DNS_IP" == "10.51.52.1" ]] \
+  && grep -q 'PIHOLE_DNS_IP="${TCP_VPN_SUBNET%.*}.1"' "$POST"; then
+  pass "post-install forces PIHOLE_DNS_IP from TCP_VPN_SUBNET"
+else
+  fail "post-install PIHOLE_DNS_IP not forced from TCP subnet"
+fi
+
+echo "=== [9/9] docker network label recreate (if docker available) ==="
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  n="datagate-verify-xray-net-$$"
+  docker network rm "$n" >/dev/null 2>&1 || true
+  docker network create "$n" >/dev/null
+  # Mimic ensure_xray_network: unlabeled → rm → create with labels
+  label="$(docker network inspect -f '{{index .Labels "com.docker.compose.network"}}' "$n" 2>/dev/null || true)"
+  if [[ "$label" == "xray_network" ]]; then
+    fail "unexpected: unlabeled create already had compose label"
+  else
+    docker network rm "$n" >/dev/null
+    docker network create \
+      --label com.docker.compose.project=datagate-monitor-xray \
+      --label com.docker.compose.network=xray_network \
+      "$n" >/dev/null
+    label="$(docker network inspect -f '{{index .Labels "com.docker.compose.network"}}' "$n")"
+    docker network rm "$n" >/dev/null
+    if [[ "$label" == "xray_network" ]]; then
+      pass "docker network recreate with compose labels works"
+    else
+      fail "labeled network missing com.docker.compose.network=$label"
+    fi
+  fi
+else
+  echo "SKIP: docker network label test (docker not available)"
+fi
+
 if [[ "$FAIL" -eq 0 ]]; then
   echo "=== ALL VERIFY CHECKS PASSED ==="
 else

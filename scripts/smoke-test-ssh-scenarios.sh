@@ -114,6 +114,24 @@ else
   fail "missing skip-totp / cloud-init hardening"
 fi
 
+# Prefer target user's authorized_keys before /root (root sudo must not wipe user keys)
+if grep -n 'home/.ssh/authorized_keys' "$SSH_SCRIPT" | head -1 >/dev/null \
+  && awk '
+    /elif \[\[ -f "\$home\/\.ssh\/authorized_keys" \]\]/ { user=NR }
+    /elif \[\[ -f \/root\/\.ssh\/authorized_keys \]\]/ { root=NR }
+    END { exit !(user && root && user < root) }
+  ' "$SSH_SCRIPT"; then
+  pass "prefers target user authorized_keys before root"
+else
+  fail "missing prefer-target-user key order"
+fi
+
+if grep -q 'passwd -S' "$SSH_SCRIPT" && grep -q 'st" == "P"' "$SSH_SCRIPT"; then
+  pass "--skip-password requires usable password (P)"
+else
+  fail "missing --skip-password passwd -S guard"
+fi
+
 if [[ "$FAIL" -eq 0 ]]; then
   echo "=== ALL SSH SCENARIO TESTS PASSED ==="
 else

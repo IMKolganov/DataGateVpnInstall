@@ -95,13 +95,18 @@ ask() {
 }
 
 detect_ssh_client_ip() {
+  local ip=""
   if [[ -n "${SSH_CLIENT:-}" ]]; then
-    echo "${SSH_CLIENT%% *}"
+    ip="${SSH_CLIENT%% *}"
   elif [[ -n "${SSH_CONNECTION:-}" ]]; then
-    echo "${SSH_CONNECTION%% *}"
+    ip="${SSH_CONNECTION%% *}"
   else
-    echo ""
+    # sudo env_reset drops SSH_CLIENT — recover from live :22 session
+    ip="$(ss -Htn state established '( sport = :22 )' 2>/dev/null \
+      | awk 'NR==1 {print $5; exit}' \
+      | sed -E 's/^\[([0-9a-fA-F:]+)\]:[0-9]+$/\1/; s/^([0-9.]+):[0-9]+$/\1/')"
   fi
+  echo "$ip"
 }
 
 detect_wan_if() {
@@ -723,7 +728,23 @@ EOF
 }
 
 ensure_xray_network() {
-  docker network create datagate-monitor-xray_xray_network 2>/dev/null || true
+  # Must carry compose labels — bare `docker network create` then `compose up` fails with
+  # "network … incorrect label com.docker.compose.network" (blocks start_xray every fresh host).
+  local name=datagate-monitor-xray_xray_network
+  if docker network inspect "$name" >/dev/null 2>&1; then
+    local label
+    label="$(docker network inspect -f '{{index .Labels "com.docker.compose.network"}}' "$name" 2>/dev/null || true)"
+    if [[ "$label" != "xray_network" ]]; then
+      info "Recreating $name with compose labels (was unlabeled)"
+      docker network rm "$name" >/dev/null 2>&1 || true
+    else
+      return 0
+    fi
+  fi
+  docker network create \
+    --label com.docker.compose.project=datagate-monitor-xray \
+    --label com.docker.compose.network=xray_network \
+    "$name" >/dev/null
 }
 
 write_nginx_compose() {
