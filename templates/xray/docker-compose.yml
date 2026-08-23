@@ -21,6 +21,8 @@ services:
       XRAY__DOMAIN: ${XRAY_DOMAIN}
       XRAY__IP: ${PUBLIC_IP}
       Backend__BaseUrl: ${BACKEND__BASEURL}
+      # Optional: public manager URL for dashboard self-announce (see site.env PUBLIC_API_URL)
+      # PUBLIC_API_URL: ${PUBLIC_API_URL}
       XRAY_TRANSPORT_MODE: ${XRAY_TRANSPORT_MODE:-tls}
       PORT: "443"
       XRAY_TLS_CERT_FILE: /etc/letsencrypt/live/${XRAY_DOMAIN}/fullchain.pem

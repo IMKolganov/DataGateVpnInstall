@@ -30,6 +30,8 @@ services:
       OpenVpnManagement__Port: ${UDP_MANAGEMENT_PORT}
       OpenVpnManagement__Host: "localhost"
       BACKEND__BASEURL: ${BACKEND__BASEURL}
+      # Optional: public manager URL for dashboard self-announce (see site.env PUBLIC_API_URL)
+      # PUBLIC_API_URL: ${PUBLIC_API_URL}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${UDP_API_PORT}"]
       interval: 30s
