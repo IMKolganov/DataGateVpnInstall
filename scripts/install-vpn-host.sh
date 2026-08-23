@@ -179,8 +179,11 @@ TZ=UTC
 ASPNETCORE_ENVIRONMENT=Production
 TCP_DCO=true
 UDP_DCO=true
-UDP_CIPHER=AES-128-GCM
-UDP_DATA_CIPHERS=AES-128-GCM:AES-256-GCM:CHACHA20-POLY1305
+# Prefer ChaCha on weak VPS (no AES-NI); DCO requires AEAD (GCM/ChaCha), not CBC
+TCP_CIPHER=CHACHA20-POLY1305
+TCP_DATA_CIPHERS=CHACHA20-POLY1305:AES-128-GCM
+UDP_CIPHER=CHACHA20-POLY1305
+UDP_DATA_CIPHERS=CHACHA20-POLY1305:AES-128-GCM
 TCP_VPN_NETMASK=255.255.255.0
 UDP_VPN_NETMASK=255.255.255.0
 INSTALL_DOCKER=true
@@ -367,7 +370,7 @@ render_file() {
     TCP_PORT UDP_PORT TCP_API_PORT UDP_API_PORT TCP_MANAGEMENT_PORT UDP_MANAGEMENT_PORT
     TCP_TUN_DEV UDP_TUN_DEV UDP_WAN_IF
     PIHOLE_WEBPASSWORD PIHOLE_WEB_PORT TZ
-    ASPNETCORE_ENVIRONMENT TCP_DCO UDP_DCO UDP_CIPHER UDP_DATA_CIPHERS
+    ASPNETCORE_ENVIRONMENT TCP_DCO UDP_DCO TCP_CIPHER TCP_DATA_CIPHERS UDP_CIPHER UDP_DATA_CIPHERS
     TCP_VPN_NETMASK UDP_VPN_NETMASK
   )
   for k in "${keys[@]}"; do
@@ -399,6 +402,8 @@ TCP_MANAGEMENT_PORT=${TCP_MANAGEMENT_PORT}
 TCP_TUN_DEV=${TCP_TUN_DEV}
 TCP_TUN_IF=${TCP_TUN_DEV}
 TCP_DCO=${TCP_DCO:-true}
+TCP_CIPHER=${TCP_CIPHER:-CHACHA20-POLY1305}
+TCP_DATA_CIPHERS=${TCP_DATA_CIPHERS:-CHACHA20-POLY1305:AES-128-GCM}
 EOF
 }
 
@@ -417,8 +422,8 @@ UDP_MANAGEMENT_PORT=${UDP_MANAGEMENT_PORT}
 UDP_TUN_DEV=${UDP_TUN_DEV}
 UDP_WAN_IF=${UDP_WAN_IF:-$WAN_IF}
 UDP_DCO=${UDP_DCO:-true}
-UDP_CIPHER=${UDP_CIPHER:-AES-128-GCM}
-UDP_DATA_CIPHERS=${UDP_DATA_CIPHERS:-AES-128-GCM:AES-256-GCM:CHACHA20-POLY1305}
+UDP_CIPHER=${UDP_CIPHER:-CHACHA20-POLY1305}
+UDP_DATA_CIPHERS=${UDP_DATA_CIPHERS:-CHACHA20-POLY1305:AES-128-GCM}
 EOF
 }
 
@@ -793,6 +798,15 @@ setup_ufw() {
   ENV_FILE="$INSTALL_HOME/host/.env" "$SCRIPT_DIR/setup-host-ufw.sh"
 }
 
+setup_ovpn_dco() {
+  if ! is_true "${TCP_DCO:-true}" && ! is_true "${UDP_DCO:-true}"; then
+    info "DCO disabled for both stacks — skip host module"
+    return 0
+  fi
+  info "Ensuring OpenVPN DCO kernel module on host"
+  "$SCRIPT_DIR/setup-ovpn-dco.sh" || warn "DCO module setup failed — OpenVPN will use userspace crypto"
+}
+
 wait_openvpn_up() {
   info "Waiting for OpenVPN containers (first boot can take a few minutes for PKI)..."
   local i=0
@@ -996,6 +1010,7 @@ main() {
   fi
 
   if [[ "$SKIP_START" -eq 0 ]] && is_true "${START_STACKS:-true}"; then
+    setup_ovpn_dco
     # Order: OpenVPN → Pi-hole → nginx(HTTP, no Xray upstream) → certs
     #        → start Xray → full nginx (SNI + WSS)
     start_openvpn
