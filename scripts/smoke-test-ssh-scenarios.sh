@@ -108,6 +108,12 @@ else
   fail "setup-host-ssh.sh missing same-file guard"
 fi
 
+if grep -q 'forcing --skip-sshd' "$SSH_SCRIPT" && grep -q '00-datagate-hardening.conf' "$SSH_SCRIPT"; then
+  pass "skip-totp auto-skip-sshd + cloud-init drop-in"
+else
+  fail "missing skip-totp / cloud-init hardening"
+fi
+
 if [[ "$FAIL" -eq 0 ]]; then
   echo "=== ALL SSH SCENARIO TESTS PASSED ==="
 else

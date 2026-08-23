@@ -132,6 +132,29 @@ if is_true "${INSTALL_XRAY:-false}"; then
     else
       warn "UFW status did not show $PIHOLE_DNS_IP:53 — verify identity DNS rules"
     fi
+    if ufw status 2>/dev/null | grep -q "${XRAY_DNS_IDENTITY_SUBNET}"; then
+      pass "UFW mentions identity subnet $XRAY_DNS_IDENTITY_SUBNET"
+    else
+      fail "UFW missing identity subnet $XRAY_DNS_IDENTITY_SUBNET (DNS from sendThrough)"
+    fi
+  fi
+
+  xray_api_conf="$INSTALL_HOME/nginx-docker/nginx/conf.d/xray-api.conf"
+  if [[ -f "$xray_api_conf" ]] && grep -q 'proxy_set_header Authorization' "$xray_api_conf"; then
+    pass "xray-api.conf proxies Authorization"
+  else
+    fail "xray-api.conf missing Authorization (dashboard JWT → 401)"
+  fi
+
+  xray_env="$INSTALL_HOME/datagate-monitor-xray/.env"
+  if [[ -f "$xray_env" ]]; then
+    base="$(grep -E '^XRAY_PIHOLE_BASE_URL=' "$xray_env" | cut -d= -f2-)"
+    expect="http://${PIHOLE_DNS_IP}:8080"
+    if [[ "$base" == "$expect" || "$base" == "http://${PIHOLE_DNS_IP}:${PIHOLE_WEB_PORT:-8080}" ]]; then
+      pass "Xray Pi-hole Base URL matches TCP .1 ($base)"
+    else
+      fail "Xray Pi-hole Base URL stale/wrong (got $base want http://${PIHOLE_DNS_IP}:8080)"
+    fi
   fi
 fi
 

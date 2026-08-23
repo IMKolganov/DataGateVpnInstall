@@ -337,10 +337,29 @@ load_env() {
     : "${XRAY_DNS_IDENTITY_SUBNET:?XRAY_DNS_IDENTITY_SUBNET required when INSTALL_XRAY=true}"
     reject_placeholder XRAY_DNS_IDENTITY_SUBNET "$XRAY_DNS_IDENTITY_SUBNET"
     : "${XRAY_API_ALLOW_IPS:=$DASHBOARD_API_IP}"
+    # Always sync from current subnets — site.env.example values (10.51.40.1 / 10.80.1.)
+    # must not stick after the operator changes TCP/UDP/identity ranges.
+    XRAY_DNS1="$tcp_dns"
+    XRAY_DNS2="$tcp_dns"
+    XRAY_PIHOLE_BASE_URL="http://${tcp_dns}:${PIHOLE_WEB_PORT:-8080}"
+    XRAY_PIHOLE_EXCLUDE_PREFIXES="${TCP_VPN_SUBNET%.*}.,${UDP_VPN_SUBNET%.*}."
+    XRAY_PIHOLE_CLIENT_SUBNET_PREFIX="${XRAY_DNS_IDENTITY_SUBNET%.*}."
+    # Container eth0 only — host WAN names break identity aliases (hel/pol class bug).
+    if [[ -n "${XRAY_DNS_IDENTITY_IFACE:-}" && "$XRAY_DNS_IDENTITY_IFACE" != "eth0" ]]; then
+      warn "XRAY_DNS_IDENTITY_IFACE=${XRAY_DNS_IDENTITY_IFACE} overridden → eth0 (must be container iface)"
+    fi
+    XRAY_DNS_IDENTITY_IFACE=eth0
     : "${NGINX_CERTBOT_CONF:=$INSTALL_HOME/nginx-docker/certbot/conf}"
-    : "${XRAY_PIHOLE_EXCLUDE_PREFIXES:=${TCP_VPN_SUBNET%.*}.,${UDP_VPN_SUBNET%.*}.}"
-    : "${XRAY_PIHOLE_CLIENT_SUBNET_PREFIX:=${XRAY_DNS_IDENTITY_SUBNET%.*}.}"
-    : "${XRAY_DNS_IDENTITY_IFACE:=eth0}"
+    reject_placeholder XRAY_API_ALLOW_IPS "$XRAY_API_ALLOW_IPS"
+    # Every allow IP must look like IPv4 (comma-separated OK)
+    local _ip
+    IFS=',' read -ra _allow <<< "$XRAY_API_ALLOW_IPS"
+    for _ip in "${_allow[@]}"; do
+      _ip="$(echo "$_ip" | xargs)"
+      [[ -z "$_ip" ]] && continue
+      is_ipv4 "$_ip" || die "XRAY_API_ALLOW_IPS entry must be IPv4 (got: $_ip)"
+    done
+    info "Xray Pi-hole: BaseURL=$XRAY_PIHOLE_BASE_URL prefix=$XRAY_PIHOLE_CLIENT_SUBNET_PREFIX iface=eth0"
   fi
 
   # Remember SSH client for UFW safety net
@@ -675,8 +694,8 @@ sync_xray_dns_route_assets() {
 write_xray_env() {
   local dest="$1"
   local nginx_certs="${NGINX_CERTBOT_CONF:-$INSTALL_HOME/nginx-docker/certbot/conf}"
-  local exclude="${XRAY_PIHOLE_EXCLUDE_PREFIXES:-${TCP_VPN_SUBNET%.*}.,${UDP_VPN_SUBNET%.*}.}"
-  local prefix="${XRAY_PIHOLE_CLIENT_SUBNET_PREFIX:-${XRAY_DNS_IDENTITY_SUBNET%.*}.}"
+  local exclude="${TCP_VPN_SUBNET%.*}.,${UDP_VPN_SUBNET%.*}."
+  local prefix="${XRAY_DNS_IDENTITY_SUBNET%.*}."
   local gw="${XRAY_HOST_GATEWAY:-172.17.0.1}"
   local pihole_dns="${PIHOLE_DNS_IP:-${TCP_VPN_SUBNET%.*}.1}"
   cat >"$dest" <<EOF
@@ -688,13 +707,13 @@ XRAY_TRANSPORT_MODE=${XRAY_TRANSPORT_MODE:-tls}
 XRAY_ACCEPT_PROXY_PROTOCOL=${XRAY_ACCEPT_PROXY_PROTOCOL:-true}
 XRAY_MANAGER_HOST_PORT=${XRAY_MANAGER_HOST_PORT:-5012}
 XRAY_HOST_GATEWAY=${gw}
-XRAY_DNS1=${XRAY_DNS1:-$pihole_dns}
-XRAY_DNS2=${XRAY_DNS2:-$pihole_dns}
-# Pi-hole web UI listens on TCP tun .1 (PIHOLE_DNS_IP), not docker0 — Xray must not use 172.17.0.1:8080
-XRAY_PIHOLE_BASE_URL=${XRAY_PIHOLE_BASE_URL:-http://${PIHOLE_DNS_IP}:${PIHOLE_WEB_PORT:-8080}}
+XRAY_DNS1=${pihole_dns}
+XRAY_DNS2=${pihole_dns}
+# Pi-hole web UI listens on TCP tun .1 (PIHOLE_DNS_IP), not docker0 — never 172.17.0.1:8080
+XRAY_PIHOLE_BASE_URL=http://${pihole_dns}:${PIHOLE_WEB_PORT:-8080}
 XRAY_DNS_IDENTITY_ENABLED=${XRAY_DNS_IDENTITY_ENABLED:-true}
 XRAY_DNS_IDENTITY_SUBNET=${XRAY_DNS_IDENTITY_SUBNET}
-XRAY_DNS_IDENTITY_IFACE=${XRAY_DNS_IDENTITY_IFACE:-eth0}
+XRAY_DNS_IDENTITY_IFACE=eth0
 XRAY_PIHOLE_CLIENT_SUBNET_PREFIX=${prefix}
 XRAY_PIHOLE_EXCLUDE_PREFIXES=${exclude}
 PIHOLE_ENABLED=true
@@ -988,16 +1007,19 @@ EOF
   Xray ApiUrl:     https://${XRAY_DOMAIN}:${XRAY_API_HTTPS_PORT:-9443}
   Xray DNS identity subnet: ${XRAY_DNS_IDENTITY_SUBNET}
   Xray DNS route:  systemd datagate-xray-dns-route.service (reboot-safe)
+  Xray Pi-hole:    BaseURL http://${PIHOLE_DNS_IP}:${PIHOLE_WEB_PORT:-8080}  prefix ${XRAY_PIHOLE_CLIENT_SUBNET_PREFIX}  (password = PIHOLE_WEBPASSWORD)
 EOF
   fi
   cat <<EOF
 
-Dashboard registration:
-  - UDP ApiUrl: https://${UDP_WSS_DOMAIN}/
-  - TCP ApiUrl: https://${TCP_WSS_DOMAIN}/
-$(is_true "${INSTALL_XRAY:-false}" && echo "  - Xray ApiUrl: https://${XRAY_DOMAIN}:${XRAY_API_HTTPS_PORT:-9443}")
+Dashboard registration (do not mix types):
+  - UDP  type=OpenVPN  ApiUrl=https://${UDP_WSS_DOMAIN}/
+  - TCP  type=OpenVPN  ApiUrl=https://${TCP_WSS_DOMAIN}/
+$(is_true "${INSTALL_XRAY:-false}" && echo "  - Xray type=Xray (NOT OpenVPN)  ApiUrl=https://${XRAY_DOMAIN}:${XRAY_API_HTTPS_PORT:-9443}")
+$(is_true "${INSTALL_XRAY:-false}" && echo "  - Xray Pi-hole: BaseURL=http://${PIHOLE_DNS_IP}:${PIHOLE_WEB_PORT:-8080}  app password=PIHOLE_WEBPASSWORD  client subnet=${XRAY_PIHOLE_CLIENT_SUBNET_PREFIX}")
   - Backend: ${BACKEND__BASEURL}
   - Subnets: TCP ${TCP_VPN_SUBNET}/24 , UDP ${UDP_VPN_SUBNET}/24
+$(is_true "${INSTALL_XRAY:-false}" && echo "  - Identity: ${XRAY_DNS_IDENTITY_SUBNET}")
 
 Useful:
   docker ps -a

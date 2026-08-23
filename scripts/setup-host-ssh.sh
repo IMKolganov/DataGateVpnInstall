@@ -176,6 +176,22 @@ apply_sshd() {
   install -m 0644 "$SSH_TEMPLATES/sshd_config" /etc/ssh/sshd_config
   install -m 0644 "$SSH_TEMPLATES/sshd" /etc/pam.d/sshd
 
+  # OpenSSH: first value wins; Include sshd_config.d runs before main-file keywords.
+  # Write 00-datagate so we beat cloud-init (50-cloud-init.conf) on Ubuntu images.
+  mkdir -p /etc/ssh/sshd_config.d
+  cat >/etc/ssh/sshd_config.d/00-datagate-hardening.conf <<'EOF'
+# DataGate — must sort before 50-cloud-init.conf (first-value-wins)
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication yes
+PubkeyAuthentication yes
+AuthenticationMethods publickey,keyboard-interactive
+ChallengeResponseAuthentication yes
+UsePAM yes
+EOF
+  chmod 0644 /etc/ssh/sshd_config.d/00-datagate-hardening.conf
+  info "Wrote /etc/ssh/sshd_config.d/00-datagate-hardening.conf (overrides cloud-init)"
+
   # Effective policy from templates:
   #   PermitRootLogin no
   #   PasswordAuthentication no
@@ -242,6 +258,11 @@ main() {
   fi
 
   [[ -n "$ADMIN_USER" ]] || die "pass --user YOURNAME"
+
+  if [[ "$SKIP_TOTP" -eq 1 && "$SKIP_SSHD" -eq 0 && "$APPLY_SSHD_ONLY" -eq 0 ]]; then
+    warn "--skip-totp without --skip-sshd would fail at apply_sshd — forcing --skip-sshd"
+    SKIP_SSHD=1
+  fi
 
   ensure_user "$ADMIN_USER"
   set_password "$ADMIN_USER"

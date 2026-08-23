@@ -116,6 +116,49 @@ else
   pass "rejects identity subnet overlapping TCP VPN subnet"
 fi
 
+echo "=== [7/7] stale site.env Xray Pi-hole fields sync to new subnets ==="
+stale="$TEST_ROOT/site.env.stale"
+cp "$TEST_ROOT/site.env" "$stale"
+# Simulate operator who changed VPN subnets but left example Xray DNS lines
+sed -i \
+  -e 's/TCP_VPN_SUBNET=10.51.40.0/TCP_VPN_SUBNET=10.51.52.0/' \
+  -e 's/UDP_VPN_SUBNET=10.51.42.0/UDP_VPN_SUBNET=10.51.54.0/' \
+  -e 's|XRAY_DNS_IDENTITY_SUBNET=10.80.5.0/24|XRAY_DNS_IDENTITY_SUBNET=10.80.4.0/24|' \
+  "$stale"
+# Inject stale (wrong) values that used to stick
+{
+  echo 'XRAY_DNS1=10.51.40.1'
+  echo 'XRAY_DNS2=10.51.40.1'
+  echo 'XRAY_PIHOLE_BASE_URL=http://10.51.40.1:8080'
+  echo 'XRAY_PIHOLE_CLIENT_SUBNET_PREFIX=10.80.1.'
+  echo 'XRAY_PIHOLE_EXCLUDE_PREFIXES=10.51.40.,10.51.42.'
+  echo 'XRAY_DNS_IDENTITY_IFACE=ens3'
+} >>"$stale"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-stale|" "$stale"
+"$ROOT/scripts/install-vpn-host.sh" --render-only --env "$stale"
+xenv="$TEST_ROOT/home-stale/datagate-monitor-xray/.env"
+grep -q 'XRAY_PIHOLE_BASE_URL=http://10.51.52.1:8080' "$xenv" \
+  && pass "stale Base URL rewritten to TCP .1" || fail "stale Base URL not rewritten ($(grep PIHOLE_BASE "$xenv" || true))"
+grep -q 'XRAY_DNS1=10.51.52.1' "$xenv" \
+  && pass "stale DNS1 rewritten" || fail "stale DNS1 not rewritten"
+grep -q 'XRAY_PIHOLE_CLIENT_SUBNET_PREFIX=10.80.4.' "$xenv" \
+  && pass "stale identity prefix rewritten" || fail "stale prefix not rewritten"
+grep -q 'XRAY_PIHOLE_EXCLUDE_PREFIXES=10.51.52.,10.51.54.' "$xenv" \
+  && pass "stale excludes rewritten" || fail "stale excludes not rewritten"
+grep -q 'XRAY_DNS_IDENTITY_IFACE=eth0' "$xenv" \
+  && pass "WAN iface ens3 forced to eth0" || fail "iface not forced to eth0"
+
+# Placeholder XRAY_API_ALLOW_IPS must die early
+bad_allow="$TEST_ROOT/site.env.bad-allow"
+cp "$TEST_ROOT/site.env" "$bad_allow"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-bad-allow|" "$bad_allow"
+echo 'XRAY_API_ALLOW_IPS=YOUR_DASHBOARD_PUBLIC_IP' >>"$bad_allow"
+if "$ROOT/scripts/install-vpn-host.sh" --render-only --env "$bad_allow" 2>/dev/null; then
+  fail "should reject YOUR_* in XRAY_API_ALLOW_IPS"
+else
+  pass "rejects placeholder XRAY_API_ALLOW_IPS"
+fi
+
 if [[ "$FAIL" -eq 0 ]]; then
   echo "=== ALL VERIFY CHECKS PASSED ==="
 else
