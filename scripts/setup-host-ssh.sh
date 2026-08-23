@@ -112,7 +112,15 @@ install_authorized_keys() {
 
   info "Installing authorized_keys for $u from $key_src"
   install -d -m 0700 -o "$u" -g "$u" "$home/.ssh"
-  install -m 0600 -o "$u" -g "$u" "$key_src" "$home/.ssh/authorized_keys"
+  local dest="$home/.ssh/authorized_keys"
+  # Already the target file (e.g. --pubkey ~/.ssh/authorized_keys while running as that user)
+  if [[ -f "$dest" ]] && [[ "$(realpath -m "$key_src")" == "$(realpath -m "$dest")" ]]; then
+    info "authorized_keys already in place — skipping copy"
+    chmod 0600 "$dest"
+    chown "$u:$u" "$dest"
+  else
+    install -m 0600 -o "$u" -g "$u" "$key_src" "$dest"
+  fi
 }
 
 enrol_totp() {
