@@ -1004,7 +1004,22 @@ Useful:
   cd $INSTALL_HOME/openvpn-udp-wss && docker compose logs -f --tail=100
   cd $INSTALL_HOME/pi-hole && docker compose logs -f --tail=100
   cd $INSTALL_HOME/nginx-docker && docker compose logs -f --tail=50
+
+Post-install verify:
+  sudo ENV_FILE=$INSTALL_HOME/site.env $SCRIPT_DIR/post-install-check.sh
 EOF
+}
+
+run_post_install_check() {
+  [[ "$RENDER_ONLY" -eq 1 ]] && return 0
+  [[ "$SKIP_START" -eq 1 ]] && return 0
+  is_true "${START_STACKS:-true}" || return 0
+  info "Running post-install checks"
+  if ENV_FILE="${INSTALL_HOME}/site.env" "$SCRIPT_DIR/post-install-check.sh"; then
+    info "post-install checks passed"
+  else
+    warn "post-install checks failed — fix before dashboard registration (see output above)"
+  fi
 }
 
 main() {
@@ -1050,6 +1065,7 @@ main() {
     fi
   fi
 
+  run_post_install_check
   print_summary
 }
 

@@ -132,33 +132,70 @@ If `INSTALL_XRAY=true` also set `XRAY_DOMAIN`, `XRAY_DNS_IDENTITY_SUBNET`, `XRAY
 
 Two new servers → **different** VPN + Xray identity subnets on each.
 
-## Adding another VPN host (checklist)
+## Adding another VPN host (zero manual host tweaks)
 
-1. Copy this `install/vpns` kit to the new VPS (or `git pull` in your installer clone).
-2. `cp site.env.example site.env` — set **unique** subnets:
-   - `TCP_VPN_SUBNET` (e.g. `10.51.48.0`)
-   - `UDP_VPN_SUBNET` (e.g. `10.51.50.0`)
-   - `XRAY_DNS_IDENTITY_SUBNET` (e.g. `10.80.3.0/24`)
-3. `INSTALL_HOME=/home/YOURUSER` — stacks become `~/openvpn-tcp-wss`, `~/datagate-monitor-xray`, etc.
-4. DNS A-records for UDP/TCP/Xray domains → `PUBLIC_IP`.
-5. `sudo ./scripts/install-vpn-host.sh` (full run).
-6. Installer automatically:
-   - `XRAY_DNS_IDENTITY_IFACE=eth0` in xray `.env`
-   - UFW: docker + **identity subnet** → Pi-hole `:53` (sendThrough uses identity IPs as source)
-   - host route `identity subnet → xray container` + `datagate-xray-dns-route.service` on reboot
-7. **Dashboard** (after backend/frontend deploy):
-   - Register UDP/TCP/Xray ApiUrls
-   - Xray export template: JSON with `dnsServers` (e.g. `["10.51.x.1"]`)
-   - Pi-hole: Base URL `http://{TCP}.1:8080`, subnet prefix `10.80.x.`
-   - Re-issue client links
-8. Client: Private DNS **Off**, DNS through tunnel.
+Use the **latest** installer (`git pull` / fresh clone). After `install-vpn-host.sh` finishes, `post-install-check.sh` must pass — that covers the Helsinki class of bugs (identity iface, UFW :53, host route, DCO, CIPHER in compose).
 
-After `docker compose up --force-recreate` on xray: `sudo systemctl start datagate-xray-dns-route.service`
+### DNS A-records (create before certbot)
 
-Re-run UFW after enabling Xray on an existing host (identity rules need `XRAY_DNS_IDENTITY_SUBNET` in `host/.env`):
+Point all of these to the **new** server `PUBLIC_IP` (not hel):
+
+| Record | Example |
+|--------|---------|
+| UDP WSS | `s1-xxx.datagateapp.com` → PUBLIC_IP |
+| TCP WSS | `s2-xxx.datagateapp.com` → PUBLIC_IP |
+| Xray (if enabled) | `xs1-xxx.datagateapp.com` → PUBLIC_IP |
+
+Wait until `dig +short DOMAIN` returns the new IP, then install.
+
+### Unique subnets (never reuse hel)
+
+| Variable | hel-1 (taken) | next host example |
+|----------|---------------|-------------------|
+| `TCP_VPN_SUBNET` | `10.51.44.0` | `10.51.48.0` |
+| `UDP_VPN_SUBNET` | `10.51.46.0` | `10.51.50.0` |
+| `XRAY_DNS_IDENTITY_SUBNET` | `10.80.2.0/24` | `10.80.3.0/24` |
+
+### Install (host side — no post-edit)
 
 ```bash
-sudo INSTALLER_SSH_CLIENT_IP=YOUR_IP ENV_FILE=~/host/.env ./scripts/setup-host-ufw.sh
+git clone https://github.com/IMKolganov/DataGateVpnInstall.git
+cd DataGateVpnInstall && git pull && chmod +x scripts/*.sh
+cp site.env.example site.env && nano site.env   # unique subnets + domains + IPs
+# or: sudo ./scripts/install-vpn-host.sh --wizard
+
+sudo ./scripts/install-vpn-host.sh
+# ends with post-install-check — must print POST-INSTALL OK
+
+# re-check anytime:
+sudo ENV_FILE=~/site.env ./scripts/post-install-check.sh
+```
+
+Installer applies automatically (no hel-style hand fixes):
+
+- OpenVPN cipher from **AES-NI** detect (AES-128-GCM vs ChaCha)
+- `CIPHER` / `DATA_CIPHERS` in TCP **and** UDP compose
+- Host DCO module (`ovpn` / ovpn-dco)
+- `XRAY_DNS_IDENTITY_IFACE=eth0`
+- UFW: identity subnet → Pi-hole `:53` + forward
+- Host route + `datagate-xray-dns-route.service`
+
+### Dashboard only (not on the VPS)
+
+After host checks pass:
+
+1. Register UDP / TCP / Xray ApiUrls
+2. New servers get seeded export templates with AES-128-GCM (deploy backend/frontend first)
+3. Xray: JSON template with `dnsServers: ["10.51.x.1"]`
+4. Pi-hole: `http://10.51.x.1:8080`, prefix `10.80.x.`
+5. Issue client links
+
+Client: Private DNS Off.
+
+After `docker compose up --force-recreate` on xray only:
+
+```bash
+sudo systemctl start datagate-xray-dns-route.service
 ```
 
 ## Useful flags
