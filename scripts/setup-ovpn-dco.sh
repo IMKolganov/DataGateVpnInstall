@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Load OpenVPN DCO kernel module on the host (required when DCO=true in containers).
-# OpenVPN data-channel offload needs ovpn-dco-v2 (or equivalent) in the host kernel.
+# OpenVPN 2.7 + Linux 6.16+ use in-tree "ovpn"; older kernels use ovpn-dco-v2.
 #
 # Usage:
 #   sudo ./scripts/setup-ovpn-dco.sh
@@ -26,8 +26,8 @@ try_modprobe() {
   return 1
 }
 
-# Common module names across OpenVPN DCO / kernel builds
-CANDIDATES=(ovpn-dco-v2 ovpn_dco_v2 ovpn-dco ovpn_dco)
+# ovpn = in-tree (Ubuntu resolute / kernel 6.16+); ovpn-dco* = out-of-tree
+CANDIDATES=(ovpn ovpn-dco-v2 ovpn_dco_v2 ovpn-dco ovpn_dco)
 
 for m in "${CANDIDATES[@]}"; do
   if mod_loaded "$m" || try_modprobe "$m"; then
@@ -37,7 +37,6 @@ for m in "${CANDIDATES[@]}"; do
   fi
 done
 
-# Ubuntu/Debian: extra modules often ship DCO
 if command -v apt-get >/dev/null 2>&1; then
   kver="$(uname -r)"
   info "trying linux-modules-extra-${kver}"
@@ -50,10 +49,18 @@ if command -v apt-get >/dev/null 2>&1; then
         exit 0
       fi
     done
+  else
+    warn "linux-modules-extra-${kver} not available (normal on kernels with in-tree ovpn)"
   fi
 fi
 
-warn "ovpn-dco module not found — OpenVPN will fall back to userspace (slower)."
-warn "Install kernel headers/DKMS ovpn-dco or linux-modules-extra-\$(uname -r), then: modprobe ovpn-dco-v2"
-warn "Containers keep DCO=true; without the module OpenVPN logs a DCO warning and continues."
+if lsmod 2>/dev/null | awk '{print $1}' | grep -qE '^ovpn'; then
+  info "DCO-related module already loaded:"
+  lsmod | grep -E 'ovpn' || true
+  exit 0
+fi
+
+warn "ovpn / ovpn-dco module not found — OpenVPN will fall back to userspace (slower)."
+warn "On Linux 6.16+: modprobe ovpn (in-tree). On older: linux-modules-extra or DKMS ovpn-dco-v2."
+warn "Containers keep DCO=true; without the module OpenVPN continues in userspace."
 exit 0
