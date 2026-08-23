@@ -226,6 +226,49 @@ else
   fail "host/.env EXTRA_TCP_PORT does not match XRAY_XHTTP_PORT ($(grep EXTRA_TCP_PORT "$home/host/.env" || true))"
 fi
 
+# A skipped xHTTP inbound is silent by design, so post-install must be the one to catch it.
+grep -q 'no xHTTP inbound on' "$POST" \
+  && pass "post-install asserts the xHTTP inbound was really rendered" \
+  || fail "post-install-check.sh does not verify the xHTTP inbound"
+
+# Docker publishes the xHTTP port, so a collision breaks `compose up` for the whole Xray
+# container — load_env must reject it before anything is written.
+for bad_port in 443 9443 8080; do
+  bad_xhttp="$TEST_ROOT/site.env.xhttp-$bad_port"
+  cp "$TEST_ROOT/site.env" "$bad_xhttp"
+  sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-xhttp-$bad_port|" "$bad_xhttp"
+  echo "XRAY_XHTTP_PORT=$bad_port" >>"$bad_xhttp"
+  if "$ROOT/scripts/install-vpn-host.sh" --render-only --env "$bad_xhttp" >/dev/null 2>&1; then
+    fail "should reject XRAY_XHTTP_PORT=$bad_port (already in use)"
+  else
+    pass "rejects XRAY_XHTTP_PORT=$bad_port"
+  fi
+done
+
+bad_xhttp_path="$TEST_ROOT/site.env.xhttp-path"
+cp "$TEST_ROOT/site.env" "$bad_xhttp_path"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-xhttp-path|" "$bad_xhttp_path"
+echo 'XRAY_XHTTP_PATH=api/v1/update' >>"$bad_xhttp_path"
+if "$ROOT/scripts/install-vpn-host.sh" --render-only --env "$bad_xhttp_path" >/dev/null 2>&1; then
+  fail "should reject XRAY_XHTTP_PATH without a leading slash"
+else
+  pass "rejects XRAY_XHTTP_PATH without a leading slash"
+fi
+
+# A free port must still render, and reach both compose publish and the container env.
+ok_xhttp="$TEST_ROOT/site.env.xhttp-ok"
+cp "$TEST_ROOT/site.env" "$ok_xhttp"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-xhttp-ok|" "$ok_xhttp"
+echo 'XRAY_XHTTP_PORT=2087' >>"$ok_xhttp"
+"$ROOT/scripts/install-vpn-host.sh" --render-only --env "$ok_xhttp" >/dev/null
+ok_home="$TEST_ROOT/home-xhttp-ok"
+if grep -q '^XRAY_XHTTP_PORT=2087' "$ok_home/datagate-monitor-xray/.env" \
+  && grep -q '^EXTRA_TCP_PORT=2087' "$ok_home/host/.env"; then
+  pass "custom xHTTP port reaches xray .env and UFW"
+else
+  fail "custom xHTTP port did not propagate ($(grep -h XHTTP "$ok_home/datagate-monitor-xray/.env" || true))"
+fi
+
 # render-config.sh lives in the xray repo — absent when DataGateVpnInstall is checked out alone.
 RENDER="$ROOT/../../xray/scripts/xray/render-config.sh"
 if [[ -f "$RENDER" ]] && command -v jq >/dev/null 2>&1; then
@@ -269,6 +312,15 @@ if [[ -f "$RENDER" ]] && command -v jq >/dev/null 2>&1; then
   [[ "$(jq -r '.inbounds[] | select(.tag == "vless-in") | .streamSettings.sockopt.acceptProxyProtocol' "$cfg")" == "true" ]] \
     && pass "primary inbound keeps acceptProxyProtocol" \
     || fail "primary inbound lost acceptProxyProtocol"
+
+  # Keepalive is applied after the xHTTP patch so both inbounds reap peers that vanished without FIN
+  # (otherwise Xray-core 26.x keeps them "online" forever — no TTL on the online map).
+  if [[ "$(jq -r '.inbounds[] | select(.tag == "vless-in") | .streamSettings.sockopt.tcpKeepAliveIdle' "$cfg")" == "60" ]] \
+    && [[ "$(jq -r '.inbounds[] | select(.tag == "vless-xhttp-in") | .streamSettings.sockopt.tcpKeepAliveIdle' "$cfg")" == "60" ]]; then
+    pass "TCP keepalive applied to primary and xHTTP inbounds"
+  else
+    fail "TCP keepalive missing after xHTTP patch ($(jq -c '[.inbounds[] | select(.protocol=="vless") | {tag, sockopt:.streamSettings.sockopt}]' "$cfg"))"
+  fi
 
   "${render_env[@]}" XRAY_XHTTP_ENABLED=true XRAY_XHTTP_PORT=443 bash "$RENDER" >/dev/null 2>&1
   [[ "$(vless_count)" == "1" ]] \

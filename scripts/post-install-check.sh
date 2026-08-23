@@ -158,6 +158,38 @@ if is_true "${INSTALL_XRAY:-false}"; then
     else
       fail "Xray Pi-hole Base URL stale/wrong (got $base want http://${PIHOLE_DNS_IP}:8080)"
     fi
+
+    # render-config.sh skips the xHTTP inbound instead of failing the container (so a broken extra
+    # transport can never kill :443). That makes a missing inbound silent — assert it here.
+    xhttp_enabled="$(grep -E '^XRAY_XHTTP_ENABLED=' "$xray_env" | cut -d= -f2- || true)"
+    if is_true "${xhttp_enabled:-false}"; then
+      xhttp_port="$(grep -E '^XRAY_XHTTP_PORT=' "$xray_env" | cut -d= -f2- || true)"
+      xhttp_port="${xhttp_port:-2053}"
+      if [[ ! "$xhttp_port" =~ ^[0-9]+$ ]]; then
+        fail "XRAY_XHTTP_PORT is not numeric in $xray_env (got: $xhttp_port)"
+      else
+        xray_cfg="$INSTALL_HOME/datagate-monitor-xray/data/xray_data/xray/config.json"
+        if [[ -r "$xray_cfg" ]] && command -v jq >/dev/null 2>&1; then
+          if jq -e --argjson p "$xhttp_port" \
+            'any(.inbounds[]?; .port == $p and .streamSettings.network == "xhttp")' \
+            "$xray_cfg" >/dev/null 2>&1; then
+            pass "xHTTP inbound rendered on :$xhttp_port"
+          else
+            fail "XRAY_XHTTP_ENABLED=true but no xHTTP inbound on :$xhttp_port — docker logs datagate-monitor-xray shows why it was skipped"
+          fi
+        else
+          warn "cannot read $xray_cfg — skipped the xHTTP inbound assertion"
+        fi
+
+        if command -v ss >/dev/null 2>&1; then
+          if ss -lnt 2>/dev/null | grep -qE "[:.]${xhttp_port}[[:space:]]"; then
+            pass "xHTTP port :$xhttp_port is listening"
+          else
+            fail "nothing listening on :$xhttp_port — check compose port publish and the inbound"
+          fi
+        fi
+      fi
+    fi
   fi
 fi
 

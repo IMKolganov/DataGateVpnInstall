@@ -35,6 +35,10 @@ services:
       XRAY_XHTTP_PORT: ${XRAY_XHTTP_PORT:-2053}
       XRAY_XHTTP_PATH: ${XRAY_XHTTP_PATH:-/api/v1/update}
       XRAY_XHTTP_MODE: ${XRAY_XHTTP_MODE:-auto}
+      # Defaults live in the image entrypoint (60/15 and 600). Override only when needed:
+      # XRAY_TCP_KEEPALIVE_IDLE: ${XRAY_TCP_KEEPALIVE_IDLE:-60}
+      # XRAY_TCP_KEEPALIVE_INTERVAL: ${XRAY_TCP_KEEPALIVE_INTERVAL:-15}
+      # XRAY_ONLINE_SESSION_STALE_AFTER_SECONDS: ${XRAY_ONLINE_SESSION_STALE_AFTER_SECONDS:-600}
 
       # Pi-hole on host (OpenVPN netns) — reach via docker bridge / host.docker.internal
       DNS1: ${XRAY_DNS1}
