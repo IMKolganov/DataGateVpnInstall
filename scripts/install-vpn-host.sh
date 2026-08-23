@@ -637,11 +637,12 @@ ${allow_block}
         resolver 127.0.0.11 valid=10s ipv6=off;
         set \$xray_api_upstream datagate-monitor-xray;
         proxy_pass http://\$xray_api_upstream:5010;
+        proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
+        # Required: dashboard microservice JWT (same as OpenVPN WSS confs)
+        proxy_set_header Authorization \$http_authorization;
         proxy_read_timeout 86400s;
-
-        proxy_http_version 1.1;
 
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;

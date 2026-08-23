@@ -220,11 +220,14 @@ sudo ./scripts/install-vpn-host.sh
 
 ## After install — dashboard
 
-| Service | ApiUrl |
-|---------|--------|
-| OpenVPN UDP | `https://UDP_WSS_DOMAIN/` |
-| OpenVPN TCP | `https://TCP_WSS_DOMAIN/` |
-| Xray | `https://XRAY_DOMAIN:9443` |
+| Service | ApiUrl / field |
+|---------|----------------|
+| OpenVPN UDP | `https://UDP_WSS_DOMAIN/` — type **OpenVPN** |
+| OpenVPN TCP | `https://TCP_WSS_DOMAIN/` — type **OpenVPN** |
+| Xray | `https://XRAY_DOMAIN:9443` — type **Xray** (not OpenVPN; wrong type → JWT audience mismatch → **401**) |
+| Xray Pi-hole Base URL | `http://{PIHOLE_DNS_IP}:8080` (e.g. `http://10.51.48.1:8080`) |
+| Xray Pi-hole app password | same as `PIHOLE_WEBPASSWORD` |
+| Xray Pi-hole client subnet | identity prefix, e.g. `10.80.3.` |
 
 ## Traffic path (full stack)
 
@@ -242,6 +245,7 @@ sudo ./scripts/install-vpn-host.sh
 | Symptom | Check |
 |---------|--------|
 | certbot fails | `dig +short DOMAIN` must equal `PUBLIC_IP`; port 80 open |
+| Dashboard Xray Offline / **401 Unauthorized** on `:9443` | nginx `xray-api.conf` must `proxy_set_header Authorization $http_authorization;` (JWT otherwise never reaches manager). Also: ServerType must be **Xray** (audience `DataGateXRayManager`); `docker logs datagate-monitor-xray` must show public key fetched from `Backend__BaseUrl` |
 | Xray Pi-hole step 4 timeout | Xray Base URL must be `http://{PIHOLE_DNS_IP}:8080` (e.g. `10.51.44.1`), not `172.17.0.1` — Pi-hole listens on tun-tcp, not docker0 |
 | Xray DNS fails / step 5 forwarded=0 | `XRAY_DNS_IDENTITY_IFACE=eth0`; host route for identity subnet → xray container; UFW allow **identity subnet** (e.g. `10.80.2.0/24`) → `{PIHOLE_DNS_IP}:53` (not only docker CIDR — sendThrough uses identity IPs as source); re-issue link after sync |
 | Pi-hole exits | OpenVPN TCP must be Up first; `docker logs datagate-pihole` |
