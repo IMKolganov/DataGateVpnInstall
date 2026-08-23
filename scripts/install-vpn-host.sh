@@ -46,6 +46,21 @@ is_ipv4() {
   [[ "${1:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
 }
 
+# Prefer AES-128-GCM when CPU has AES-NI (almost all cloud VPS); ChaCha only without AES-NI.
+host_has_aes_ni() {
+  grep -qw aes /proc/cpuinfo 2>/dev/null
+}
+
+resolve_openvpn_cipher_defaults() {
+  if host_has_aes_ni; then
+    DEFAULT_OVPN_CIPHER=AES-128-GCM
+    DEFAULT_OVPN_DATA_CIPHERS=AES-128-GCM:CHACHA20-POLY1305
+  else
+    DEFAULT_OVPN_CIPHER=CHACHA20-POLY1305
+    DEFAULT_OVPN_DATA_CIPHERS=CHACHA20-POLY1305:AES-128-GCM
+  fi
+}
+
 usage() {
   sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
@@ -131,6 +146,8 @@ run_wizard() {
   local xray_prefix="10.80.1."
   local xray_domain=""
   local install_xray="false"
+  resolve_openvpn_cipher_defaults
+  info "OpenVPN cipher default: $DEFAULT_OVPN_CIPHER (AES-NI=$(host_has_aes_ni && echo yes || echo no))"
   if is_true "$install_xray_ans"; then
     install_xray="true"
     ask XRAY_DOMAIN "Xray VLESS domain" ""
@@ -179,11 +196,11 @@ TZ=UTC
 ASPNETCORE_ENVIRONMENT=Production
 TCP_DCO=true
 UDP_DCO=true
-# Prefer ChaCha on weak VPS (no AES-NI); DCO requires AEAD (GCM/ChaCha), not CBC
-TCP_CIPHER=CHACHA20-POLY1305
-TCP_DATA_CIPHERS=CHACHA20-POLY1305:AES-128-GCM
-UDP_CIPHER=CHACHA20-POLY1305
-UDP_DATA_CIPHERS=CHACHA20-POLY1305:AES-128-GCM
+# Auto: AES-128-GCM if host has AES-NI, else CHACHA20-POLY1305
+TCP_CIPHER=${DEFAULT_OVPN_CIPHER}
+TCP_DATA_CIPHERS=${DEFAULT_OVPN_DATA_CIPHERS}
+UDP_CIPHER=${DEFAULT_OVPN_CIPHER}
+UDP_DATA_CIPHERS=${DEFAULT_OVPN_DATA_CIPHERS}
 TCP_VPN_NETMASK=255.255.255.0
 UDP_VPN_NETMASK=255.255.255.0
 INSTALL_DOCKER=true
@@ -254,6 +271,13 @@ load_env() {
   : "${TZ:=UTC}"
   : "${DOCKER_BRIDGE_CIDR:=172.17.0.0/16}"
   : "${INSTALL_XRAY:=false}"
+
+  resolve_openvpn_cipher_defaults
+  : "${TCP_CIPHER:=$DEFAULT_OVPN_CIPHER}"
+  : "${TCP_DATA_CIPHERS:=$DEFAULT_OVPN_DATA_CIPHERS}"
+  : "${UDP_CIPHER:=$DEFAULT_OVPN_CIPHER}"
+  : "${UDP_DATA_CIPHERS:=$DEFAULT_OVPN_DATA_CIPHERS}"
+  info "OpenVPN ciphers: TCP=$TCP_CIPHER UDP=$UDP_CIPHER (AES-NI=$(host_has_aes_ni && echo yes || echo no))"
 
   # Derive DNS from TCP subnet if missing / still placeholder
   local tcp_dns="${TCP_VPN_SUBNET%.*}.1"
@@ -402,8 +426,8 @@ TCP_MANAGEMENT_PORT=${TCP_MANAGEMENT_PORT}
 TCP_TUN_DEV=${TCP_TUN_DEV}
 TCP_TUN_IF=${TCP_TUN_DEV}
 TCP_DCO=${TCP_DCO:-true}
-TCP_CIPHER=${TCP_CIPHER:-CHACHA20-POLY1305}
-TCP_DATA_CIPHERS=${TCP_DATA_CIPHERS:-CHACHA20-POLY1305:AES-128-GCM}
+TCP_CIPHER=${TCP_CIPHER:-AES-128-GCM}
+TCP_DATA_CIPHERS=${TCP_DATA_CIPHERS:-AES-128-GCM:CHACHA20-POLY1305}
 EOF
 }
 
@@ -422,8 +446,8 @@ UDP_MANAGEMENT_PORT=${UDP_MANAGEMENT_PORT}
 UDP_TUN_DEV=${UDP_TUN_DEV}
 UDP_WAN_IF=${UDP_WAN_IF:-$WAN_IF}
 UDP_DCO=${UDP_DCO:-true}
-UDP_CIPHER=${UDP_CIPHER:-CHACHA20-POLY1305}
-UDP_DATA_CIPHERS=${UDP_DATA_CIPHERS:-CHACHA20-POLY1305:AES-128-GCM}
+UDP_CIPHER=${UDP_CIPHER:-AES-128-GCM}
+UDP_DATA_CIPHERS=${UDP_DATA_CIPHERS:-AES-128-GCM:CHACHA20-POLY1305}
 EOF
 }
 

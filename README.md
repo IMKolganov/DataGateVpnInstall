@@ -211,7 +211,7 @@ sudo ./scripts/install-vpn-host.sh
 | no SSH after UFW | reconnect from `ADMIN_SSH_IP` or console; installer also allows session IP |
 | no SSH after 2FA | console/VNC: restore `/etc/ssh/sshd_config.bak.*` and `/etc/pam.d/sshd.bak.*`, `systemctl restart ssh` |
 | Xray won't start | certs must exist under `nginx-docker/certbot/conf/live/XRAY_DOMAIN/` |
-| OpenVPN slow / high CPU | Prefer `CHACHA20-POLY1305` (default); ensure host DCO: `sudo ./scripts/setup-ovpn-dco.sh` then `lsmod \| grep ovpn` |
+| OpenVPN slow / high CPU | 1 vCPU + WSS caps ~50–100 Mbit; installer picks AES-128-GCM if AES-NI else ChaCha; prefer Xray for speed; DCO: `lsmod \| grep ovpn` |
 | Xray DNS route unit failed | Prefer `host/setup-xray-dns-identity-route.sh` over inline `bash -c`; check `journalctl -xeu datagate-xray-dns-route` |
 
 Local smoke test (developer machine):
