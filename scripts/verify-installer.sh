@@ -269,6 +269,53 @@ else
   fail "custom xHTTP port did not propagate ($(grep -h XHTTP "$ok_home/datagate-monitor-xray/.env" || true))"
 fi
 
+# Clients download their profile on every connect and the manager re-renders it, so this switch is what
+# actually moves a node's users between transports. A wrong value must not reach the container.
+if grep -q '^XRAY_CLIENT_LINK_TRANSPORT=primary' "$xenv_xhttp"; then
+  pass "xray .env pins the client link transport"
+else
+  fail "xray .env missing XRAY_CLIENT_LINK_TRANSPORT ($(grep CLIENT_LINK "$xenv_xhttp" || true))"
+fi
+
+grep -q 'XRAY_CLIENT_LINK_TRANSPORT=xhttp but XRAY_XHTTP_ENABLED' "$POST" \
+  && pass "post-install asserts client profiles point at a live inbound" \
+  || fail "post-install-check.sh does not verify XRAY_CLIENT_LINK_TRANSPORT"
+
+bad_link_transport="$TEST_ROOT/site.env.link-transport-bad"
+cp "$TEST_ROOT/site.env" "$bad_link_transport"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-link-bad|" "$bad_link_transport"
+echo 'XRAY_CLIENT_LINK_TRANSPORT=websocket' >>"$bad_link_transport"
+if "$ROOT/scripts/install-vpn-host.sh" --render-only --env "$bad_link_transport" >/dev/null 2>&1; then
+  fail "should reject an unknown XRAY_CLIENT_LINK_TRANSPORT"
+else
+  pass "rejects an unknown XRAY_CLIENT_LINK_TRANSPORT"
+fi
+
+# xhttp links against a disabled inbound would hand every user of the node a dead profile.
+link_without_inbound="$TEST_ROOT/site.env.link-transport-orphan"
+cp "$TEST_ROOT/site.env" "$link_without_inbound"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-link-orphan|" "$link_without_inbound"
+{
+  echo 'XRAY_CLIENT_LINK_TRANSPORT=xhttp'
+  echo 'XRAY_XHTTP_ENABLED=false'
+} >>"$link_without_inbound"
+if "$ROOT/scripts/install-vpn-host.sh" --render-only --env "$link_without_inbound" >/dev/null 2>&1; then
+  fail "should reject XRAY_CLIENT_LINK_TRANSPORT=xhttp without the xHTTP inbound"
+else
+  pass "rejects xhttp links when the xHTTP inbound is disabled"
+fi
+
+link_xhttp="$TEST_ROOT/site.env.link-transport-xhttp"
+cp "$TEST_ROOT/site.env" "$link_xhttp"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-link-xhttp|" "$link_xhttp"
+echo 'XRAY_CLIENT_LINK_TRANSPORT=xhttp' >>"$link_xhttp"
+"$ROOT/scripts/install-vpn-host.sh" --render-only --env "$link_xhttp" >/dev/null
+if grep -q '^XRAY_CLIENT_LINK_TRANSPORT=xhttp' "$TEST_ROOT/home-link-xhttp/datagate-monitor-xray/.env"; then
+  pass "xhttp client link transport reaches xray .env"
+else
+  fail "xhttp client link transport did not propagate"
+fi
+
 # render-config.sh lives in the xray repo — absent when DataGateVpnInstall is checked out alone.
 RENDER="$ROOT/../../xray/scripts/xray/render-config.sh"
 if [[ -f "$RENDER" ]] && command -v jq >/dev/null 2>&1; then

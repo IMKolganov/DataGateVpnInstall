@@ -225,6 +225,9 @@ XRAY_XHTTP_ENABLED=true
 XRAY_XHTTP_PORT=2053
 XRAY_XHTTP_PATH=/api/v1/update
 XRAY_XHTTP_MODE=auto
+# Which inbound issued client profiles point at: primary | xhttp. Link files are re-rendered on
+# download, so switching this + `docker compose up -d` migrates existing users on their next connect.
+XRAY_CLIENT_LINK_TRANSPORT=primary
 XRAY_HOST_GATEWAY=172.17.0.1
 XRAY_DNS1=${tcp_dns}
 XRAY_DNS2=${tcp_dns}
@@ -392,6 +395,15 @@ load_env() {
       [[ "$XRAY_XHTTP_PATH" == /* ]] || die "XRAY_XHTTP_PATH must start with '/' (got: $XRAY_XHTTP_PATH)"
       info "Xray xHTTP inbound: port=$XRAY_XHTTP_PORT path=$XRAY_XHTTP_PATH mode=${XRAY_XHTTP_MODE:-auto}"
     fi
+    : "${XRAY_CLIENT_LINK_TRANSPORT:=primary}"
+    case "$XRAY_CLIENT_LINK_TRANSPORT" in
+      primary|xhttp) ;;
+      *) die "XRAY_CLIENT_LINK_TRANSPORT must be 'primary' or 'xhttp' (got: $XRAY_CLIENT_LINK_TRANSPORT)" ;;
+    esac
+    if [[ "$XRAY_CLIENT_LINK_TRANSPORT" == "xhttp" ]] && ! is_true "${XRAY_XHTTP_ENABLED:-true}"; then
+      die "XRAY_CLIENT_LINK_TRANSPORT=xhttp requires XRAY_XHTTP_ENABLED=true"
+    fi
+    info "Xray client link transport: $XRAY_CLIENT_LINK_TRANSPORT"
     info "Xray Pi-hole: BaseURL=$XRAY_PIHOLE_BASE_URL prefix=$XRAY_PIHOLE_CLIENT_SUBNET_PREFIX iface=eth0"
   fi
 
@@ -749,6 +761,7 @@ XRAY_XHTTP_ENABLED=${XRAY_XHTTP_ENABLED:-true}
 XRAY_XHTTP_PORT=${XRAY_XHTTP_PORT:-2053}
 XRAY_XHTTP_PATH=${XRAY_XHTTP_PATH:-/api/v1/update}
 XRAY_XHTTP_MODE=${XRAY_XHTTP_MODE:-auto}
+XRAY_CLIENT_LINK_TRANSPORT=${XRAY_CLIENT_LINK_TRANSPORT:-primary}
 XRAY_HOST_GATEWAY=${gw}
 XRAY_DNS1=${pihole_dns}
 XRAY_DNS2=${pihole_dns}

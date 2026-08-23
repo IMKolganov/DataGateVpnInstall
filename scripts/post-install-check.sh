@@ -190,6 +190,26 @@ if is_true "${INSTALL_XRAY:-false}"; then
         fi
       fi
     fi
+
+    # Which transport issued profiles point at. Profiles are re-rendered on download, so this decides
+    # what every client of this node gets on its next connect.
+    link_transport="$(grep -E '^XRAY_CLIENT_LINK_TRANSPORT=' "$xray_env" | cut -d= -f2- || true)"
+    link_transport="${link_transport:-primary}"
+    case "$link_transport" in
+      primary)
+        pass "client profiles point at the primary inbound"
+        ;;
+      xhttp)
+        if is_true "${xhttp_enabled:-false}"; then
+          pass "client profiles point at the xHTTP inbound"
+        else
+          fail "XRAY_CLIENT_LINK_TRANSPORT=xhttp but XRAY_XHTTP_ENABLED is not true — clients would get a dead profile"
+        fi
+        ;;
+      *)
+        fail "XRAY_CLIENT_LINK_TRANSPORT must be primary or xhttp (got: $link_transport)"
+        ;;
+    esac
   fi
 fi
 
