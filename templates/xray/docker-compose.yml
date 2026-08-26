@@ -20,6 +20,7 @@ services:
       DATA_DIR: /data
       XRAY__DOMAIN: ${XRAY_DOMAIN}
       XRAY__IP: ${PUBLIC_IP}
+      XRAY_API_HTTPS_PORT: ${XRAY_API_HTTPS_PORT:-9443}
       Backend__BaseUrl: ${BACKEND__BASEURL}
       # Optional: public manager URL for dashboard self-announce (see site.env PUBLIC_API_URL)
       # PUBLIC_API_URL: ${PUBLIC_API_URL}
