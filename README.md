@@ -248,6 +248,7 @@ sudo ./scripts/install-vpn-host.sh
 | Dashboard Xray Offline / **401 Unauthorized** on `:9443` | nginx `xray-api.conf` must `proxy_set_header Authorization $http_authorization;` (JWT otherwise never reaches manager). Also: ServerType must be **Xray** (audience `DataGateXRayManager`); `docker logs datagate-monitor-xray` must show public key fetched from `Backend__BaseUrl` |
 | Xray Pi-hole step 4 timeout | Xray Base URL must be `http://{PIHOLE_DNS_IP}:8080` (e.g. `10.51.44.1`), not `172.17.0.1` — Pi-hole listens on tun-tcp, not docker0 |
 | Xray DNS fails / step 5 forwarded=0 | `XRAY_DNS_IDENTITY_IFACE=eth0`; host route for identity subnet → xray container; UFW allow **identity subnet** (e.g. `10.80.2.0/24`) → `{PIHOLE_DNS_IP}:53` (not only docker CIDR — sendThrough uses identity IPs as source); re-issue link after sync |
+| Pi-hole exits (128) | TCP OpenVPN recreated; Pi-hole still on old container id. `cd ~/pi-hole && docker compose up -d --force-recreate`. Enable `datagate-pihole-after-tcp.service` so reboot auto-fixes |
 | Pi-hole exits | OpenVPN TCP must be Up first; `docker logs datagate-pihole` |
 | no SSH after UFW | reconnect from `ADMIN_SSH_IP` or console; installer also allows session IP |
 | no SSH after 2FA | console/VNC: restore `/etc/ssh/sshd_config.bak.*` and `/etc/pam.d/sshd.bak.*`, `systemctl restart ssh` |

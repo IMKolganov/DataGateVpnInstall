@@ -48,6 +48,20 @@ for name in openvpn-tcp-wss openvpn-udp-wss; do
   fi
 done
 
+# Pi-hole must share openvpn-tcp-wss netns — Exited(128) after TCP recreate is a hard fail
+if docker inspect --format '{{.State.Running}}' datagate-pihole 2>/dev/null | grep -q true; then
+  pass "datagate-pihole running"
+else
+  code="$(docker inspect --format '{{.State.ExitCode}}' datagate-pihole 2>/dev/null || echo missing)"
+  err="$(docker inspect --format '{{.State.Error}}' datagate-pihole 2>/dev/null || true)"
+  fail "datagate-pihole not running (exit=$code ${err}) — fix: cd ~/pi-hole && docker compose up -d --force-recreate"
+fi
+if systemctl is-enabled datagate-pihole-after-tcp.service >/dev/null 2>&1; then
+  pass "datagate-pihole-after-tcp.service enabled"
+else
+  warn "datagate-pihole-after-tcp.service not enabled — reboot may leave Pi-hole on stale TCP netns"
+fi
+
 # Cipher + DCO via manager API
 for port in "$TCP_API_PORT" "$UDP_API_PORT"; do
   label="api:$port"
