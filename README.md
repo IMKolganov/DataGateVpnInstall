@@ -179,6 +179,24 @@ Installer applies automatically (no hel-style hand fixes):
 - `XRAY_DNS_IDENTITY_IFACE=eth0`
 - UFW: identity subnet → Pi-hole `:53` + forward
 - Host route + `datagate-xray-dns-route.service`
+- Pi-hole re-join after TCP recreate (`datagate-pihole-after-tcp.service`)
+
+### Existing hosts — Pi-hole exit 128 after reboot
+
+`network_mode: container:openvpn-tcp-wss` stores a container **id**. After TCP recreate, Pi-hole exits 128 until force-recreated.
+
+```bash
+cd ~/DataGateVpnInstall && git pull && chmod +x scripts/*.sh
+mkdir -p ~/host
+cp scripts/recreate-pihole-after-tcp.sh ~/host/ && chmod +x ~/host/recreate-pihole-after-tcp.sh
+sed "s|__INSTALL_HOME__|$HOME|g" templates/host/datagate-pihole-after-tcp.service \
+  | sudo tee /etc/systemd/system/datagate-pihole-after-tcp.service >/dev/null
+sudo systemctl unmask datagate-pihole-after-tcp.service 2>/dev/null || true
+sudo systemctl daemon-reload
+sudo systemctl enable --now datagate-pihole-after-tcp.service
+# dig only after healthy (~20–40s importing query DB is normal):
+# dig @$(ip -4 -br addr show tun-tcp | awk '{print $3}' | cut -d/ -f1) youtube.com +short
+```
 
 ### Dashboard only (not on the VPS)
 
