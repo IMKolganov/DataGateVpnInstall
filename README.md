@@ -247,13 +247,16 @@ sudo ./scripts/install-vpn-host.sh
 | Xray Pi-hole app password | same as `PIHOLE_WEBPASSWORD` |
 | Xray Pi-hole client subnet | identity prefix, e.g. `10.80.3.` |
 
+Issued Xray profiles default to **VLESS xHTTP on `:2053`** (`XRAY_CLIENT_LINK_TRANSPORT=xhttp`) with SNI = `XRAY_DOMAIN` (your LE hostname — not microsoft/apple). Primary TLS on `:443` stays up as fallback; set `XRAY_CLIENT_LINK_TRANSPORT=primary` only for soft regions.
+
 ## Traffic path (full stack)
 
 ```
 :443  nginx stream (SNI)
-        ├─ XRAY_DOMAIN → xray:443 + PROXY protocol
+        ├─ XRAY_DOMAIN → xray:443 + PROXY protocol   (primary VLESS+TLS; soft regions / fallback)
         └─ default     → :8443 OpenVPN WSS + PROXY → host :5010/:5011
 
+:2053 xray xHTTP VLESS (direct; **default issued client profile** for RF/Iran)
 :9443 nginx → xray:5010 (manager, IP allow-list)
 :80   ACME + redirect
 ```

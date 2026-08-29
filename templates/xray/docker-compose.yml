@@ -32,13 +32,14 @@ services:
       XRAY_ACCEPT_PROXY_PROTOCOL: ${XRAY_ACCEPT_PROXY_PROTOCOL:-true}
       # Extra VLESS inbound over xHTTP: own TLS, reached directly on XRAY_XHTTP_PORT (no nginx,
       # so no PROXY protocol). Skipped by render-config.sh if it cannot be built safely.
-      XRAY_XHTTP_ENABLED: ${XRAY_XHTTP_ENABLED:-false}
+      # Installer defaults: xHTTP on + issued profiles point at it (RF/Iran DPI on :443 TLS tunnels).
+      XRAY_XHTTP_ENABLED: ${XRAY_XHTTP_ENABLED:-true}
       XRAY_XHTTP_PORT: ${XRAY_XHTTP_PORT:-2053}
       XRAY_XHTTP_PATH: ${XRAY_XHTTP_PATH:-/api/v1/update}
       XRAY_XHTTP_MODE: ${XRAY_XHTTP_MODE:-auto}
       # primary | xhttp — which inbound issued profiles point at. Link files are re-rendered on
       # download, so switching this and recreating the container migrates existing users too.
-      XRAY_CLIENT_LINK_TRANSPORT: ${XRAY_CLIENT_LINK_TRANSPORT:-primary}
+      XRAY_CLIENT_LINK_TRANSPORT: ${XRAY_CLIENT_LINK_TRANSPORT:-xhttp}
       # Defaults live in the image entrypoint (60/15 and 600). Override only when needed:
       # XRAY_TCP_KEEPALIVE_IDLE: ${XRAY_TCP_KEEPALIVE_IDLE:-60}
       # XRAY_TCP_KEEPALIVE_INTERVAL: ${XRAY_TCP_KEEPALIVE_INTERVAL:-15}

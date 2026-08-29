@@ -270,11 +270,12 @@ else
 fi
 
 # Clients download their profile on every connect and the manager re-renders it, so this switch is what
-# actually moves a node's users between transports. A wrong value must not reach the container.
-if grep -q '^XRAY_CLIENT_LINK_TRANSPORT=primary' "$xenv_xhttp"; then
-  pass "xray .env pins the client link transport"
+# actually moves a node's users between transports. Default must be xhttp (RF/Iran); wrong value must
+# not reach the container.
+if grep -q '^XRAY_CLIENT_LINK_TRANSPORT=xhttp' "$xenv_xhttp"; then
+  pass "xray .env defaults client link transport to xhttp"
 else
-  fail "xray .env missing XRAY_CLIENT_LINK_TRANSPORT ($(grep CLIENT_LINK "$xenv_xhttp" || true))"
+  fail "xray .env should default XRAY_CLIENT_LINK_TRANSPORT=xhttp ($(grep CLIENT_LINK "$xenv_xhttp" || true))"
 fi
 
 grep -q 'XRAY_CLIENT_LINK_TRANSPORT=xhttp but XRAY_XHTTP_ENABLED' "$POST" \
@@ -314,6 +315,17 @@ if grep -q '^XRAY_CLIENT_LINK_TRANSPORT=xhttp' "$TEST_ROOT/home-link-xhttp/datag
   pass "xhttp client link transport reaches xray .env"
 else
   fail "xhttp client link transport did not propagate"
+fi
+
+link_primary="$TEST_ROOT/site.env.link-transport-primary"
+cp "$TEST_ROOT/site.env" "$link_primary"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-link-primary|" "$link_primary"
+echo 'XRAY_CLIENT_LINK_TRANSPORT=primary' >>"$link_primary"
+"$ROOT/scripts/install-vpn-host.sh" --render-only --env "$link_primary" >/dev/null
+if grep -q '^XRAY_CLIENT_LINK_TRANSPORT=primary' "$TEST_ROOT/home-link-primary/datagate-monitor-xray/.env"; then
+  pass "primary client link transport override reaches xray .env"
+else
+  fail "primary client link transport override did not propagate"
 fi
 
 # render-config.sh lives in the xray repo — absent when DataGateVpnInstall is checked out alone.
