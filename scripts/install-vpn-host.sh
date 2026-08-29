@@ -219,6 +219,15 @@ XRAY_API_HTTPS_PORT=9443
 XRAY_API_ALLOW_IPS=${DASHBOARD_API_IP}
 XRAY_TRANSPORT_MODE=tls
 XRAY_ACCEPT_PROXY_PROTOCOL=true
+# Second VLESS inbound over xHTTP on its own port (own TLS, reached directly, not via nginx).
+# Looks like plain HTTP/2 traffic off :443, which is what Russian DPI currently polices hardest.
+XRAY_XHTTP_ENABLED=true
+XRAY_XHTTP_PORT=2053
+XRAY_XHTTP_PATH=/api/v1/update
+XRAY_XHTTP_MODE=auto
+# Which inbound issued client profiles point at: primary | xhttp. Link files are re-rendered on
+# download, so switching this + `docker compose up -d` migrates existing users on their next connect.
+XRAY_CLIENT_LINK_TRANSPORT=primary
 XRAY_HOST_GATEWAY=172.17.0.1
 XRAY_DNS1=${tcp_dns}
 XRAY_DNS2=${tcp_dns}
@@ -364,6 +373,37 @@ load_env() {
       [[ -z "$_ip" ]] && continue
       is_ipv4 "$_ip" || die "XRAY_API_ALLOW_IPS entry must be IPv4 (got: $_ip)"
     done
+    if is_true "${XRAY_XHTTP_ENABLED:-true}"; then
+      : "${XRAY_XHTTP_PORT:=2053}"
+      [[ "$XRAY_XHTTP_PORT" =~ ^[0-9]+$ ]] && ((XRAY_XHTTP_PORT >= 1 && XRAY_XHTTP_PORT <= 65535)) \
+        || die "XRAY_XHTTP_PORT must be 1-65535 (got: $XRAY_XHTTP_PORT)"
+      # Docker publishes this port, so a collision fails `compose up` and takes the whole Xray
+      # container down — reject it here instead of at deploy time.
+      local _busy _label
+      for _busy in \
+        "80:http certbot" "443:nginx SNI mux" "22:ssh" "8443:nginx local https" \
+        "${XRAY_API_HTTPS_PORT:-9443}:xray manager api" \
+        "${XRAY_MANAGER_HOST_PORT:-5012}:xray manager host port" \
+        "${TCP_PORT:-1195}:OpenVPN TCP" "${TCP_API_PORT:-5011}:OpenVPN TCP api" \
+        "${UDP_API_PORT:-5010}:OpenVPN UDP api" "${PIHOLE_WEB_PORT:-8080}:Pi-hole web"; do
+        _label="${_busy#*:}"
+        if [[ "$XRAY_XHTTP_PORT" == "${_busy%%:*}" ]]; then
+          die "XRAY_XHTTP_PORT=$XRAY_XHTTP_PORT is already used by $_label — pick a free port (default 2053)"
+        fi
+      done
+      : "${XRAY_XHTTP_PATH:=/api/v1/update}"
+      [[ "$XRAY_XHTTP_PATH" == /* ]] || die "XRAY_XHTTP_PATH must start with '/' (got: $XRAY_XHTTP_PATH)"
+      info "Xray xHTTP inbound: port=$XRAY_XHTTP_PORT path=$XRAY_XHTTP_PATH mode=${XRAY_XHTTP_MODE:-auto}"
+    fi
+    : "${XRAY_CLIENT_LINK_TRANSPORT:=primary}"
+    case "$XRAY_CLIENT_LINK_TRANSPORT" in
+      primary|xhttp) ;;
+      *) die "XRAY_CLIENT_LINK_TRANSPORT must be 'primary' or 'xhttp' (got: $XRAY_CLIENT_LINK_TRANSPORT)" ;;
+    esac
+    if [[ "$XRAY_CLIENT_LINK_TRANSPORT" == "xhttp" ]] && ! is_true "${XRAY_XHTTP_ENABLED:-true}"; then
+      die "XRAY_CLIENT_LINK_TRANSPORT=xhttp requires XRAY_XHTTP_ENABLED=true"
+    fi
+    info "Xray client link transport: $XRAY_CLIENT_LINK_TRANSPORT"
     info "Xray Pi-hole: BaseURL=$XRAY_PIHOLE_BASE_URL prefix=$XRAY_PIHOLE_CLIENT_SUBNET_PREFIX iface=eth0"
   fi
 
@@ -487,6 +527,12 @@ EOF
 
 write_host_env() {
   local dest="$1"
+  # Docker publishes the xHTTP port itself (its iptables rules bypass UFW), but the UFW rule keeps
+  # `ufw status` honest about what is reachable on this host.
+  local extra_tcp_port=""
+  if is_true "${INSTALL_XRAY:-false}" && is_true "${XRAY_XHTTP_ENABLED:-true}"; then
+    extra_tcp_port="${XRAY_XHTTP_PORT:-2053}"
+  fi
   cat >"$dest" <<EOF
 TCP_VPN_SUBNET=${TCP_VPN_SUBNET}
 UDP_VPN_SUBNET=${UDP_VPN_SUBNET}
@@ -505,7 +551,7 @@ PROMETHEUS_IP=${PROMETHEUS_IP:-}
 DOCKER_BRIDGE_CIDR=${DOCKER_BRIDGE_CIDR}
 NODE_EXPORTER_PORT=${NODE_EXPORTER_PORT:-9100}
 INSTALLER_SSH_CLIENT_IP=${INSTALLER_SSH_CLIENT_IP:-}
-EXTRA_TCP_PORT=
+EXTRA_TCP_PORT=${extra_tcp_port}
 EOF
   if is_true "${INSTALL_XRAY:-false}"; then
     cat >>"$dest" <<EOF
@@ -720,6 +766,11 @@ XRAY_DOMAIN=${XRAY_DOMAIN}
 XRAY_TRANSPORT_MODE=${XRAY_TRANSPORT_MODE:-tls}
 XRAY_ACCEPT_PROXY_PROTOCOL=${XRAY_ACCEPT_PROXY_PROTOCOL:-true}
 XRAY_MANAGER_HOST_PORT=${XRAY_MANAGER_HOST_PORT:-5012}
+XRAY_XHTTP_ENABLED=${XRAY_XHTTP_ENABLED:-true}
+XRAY_XHTTP_PORT=${XRAY_XHTTP_PORT:-2053}
+XRAY_XHTTP_PATH=${XRAY_XHTTP_PATH:-/api/v1/update}
+XRAY_XHTTP_MODE=${XRAY_XHTTP_MODE:-auto}
+XRAY_CLIENT_LINK_TRANSPORT=${XRAY_CLIENT_LINK_TRANSPORT:-primary}
 XRAY_HOST_GATEWAY=${gw}
 XRAY_DNS1=${pihole_dns}
 XRAY_DNS2=${pihole_dns}
