@@ -747,7 +747,8 @@ sync_pihole_after_tcp_assets() {
   local home="$INSTALL_HOME"
   mkdir -p "$home/host"
   cp "$SCRIPT_DIR/recreate-pihole-after-tcp.sh" "$home/host/recreate-pihole-after-tcp.sh"
-  chmod +x "$home/host/recreate-pihole-after-tcp.sh"
+  cp "$SCRIPT_DIR/watch-pihole-after-tcp.sh" "$home/host/watch-pihole-after-tcp.sh"
+  chmod +x "$home/host/recreate-pihole-after-tcp.sh" "$home/host/watch-pihole-after-tcp.sh"
   render_file "$TEMPLATES/host/datagate-pihole-after-tcp.service" "$home/host/datagate-pihole-after-tcp.service"
 }
 
@@ -964,10 +965,19 @@ start_openvpn() {
 start_pihole() {
   info "Starting Pi-hole (joins openvpn-tcp-wss netns; force-recreate so join uses current TCP id)"
   (cd "$INSTALL_HOME/pi-hole" && docker compose up -d --force-recreate)
-  sleep 3
+  local i st
+  info "waiting for datagate-pihole healthy/running (up to 180s)"
+  for ((i = 0; i < 180; i++)); do
+    st="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' datagate-pihole 2>/dev/null || echo missing)"
+    if [[ "$st" == "healthy" || "$st" == "running" ]]; then
+      info "datagate-pihole $st"
+      break
+    fi
+    sleep 1
+  done
   if ! docker inspect --format '{{.State.Running}}' datagate-pihole 2>/dev/null | grep -q true; then
     warn "Pi-hole not running — check: docker logs datagate-pihole"
-    warn "After any openvpn-tcp-wss recreate: sudo systemctl start datagate-pihole-after-tcp.service"
+    warn "Fix: sudo systemctl restart datagate-pihole-after-tcp.service"
   fi
   install_pihole_after_tcp_service || warn "datagate-pihole-after-tcp.service not installed"
 }
@@ -976,17 +986,21 @@ install_pihole_after_tcp_service() {
   sync_pihole_after_tcp_assets
   local unit_src="$INSTALL_HOME/host/datagate-pihole-after-tcp.service"
   [[ -f "$unit_src" ]] || return 1
+  [[ -x "$INSTALL_HOME/host/watch-pihole-after-tcp.sh" ]] || return 1
+  [[ -x "$INSTALL_HOME/host/recreate-pihole-after-tcp.sh" ]] || return 1
   if grep -qE '__[A-Z0-9_]+__' "$unit_src"; then
     warn "unresolved placeholders in $unit_src — fix INSTALL_HOME in site.env and re-render"
     return 1
   fi
-  info "Enabling systemd unit datagate-pihole-after-tcp (survives reboot / TCP recreate)"
+  info "Enabling systemd unit datagate-pihole-after-tcp (boot + docker events on TCP start)"
   # Drop any prior mask (empty/failed install left unit masked on some hosts)
   systemctl unmask datagate-pihole-after-tcp.service >/dev/null 2>&1 || true
+  # Stop old oneshot RemainAfterExit unit before replacing with long-running watcher
+  systemctl stop datagate-pihole-after-tcp.service >/dev/null 2>&1 || true
   install -m 0644 "$unit_src" /etc/systemd/system/datagate-pihole-after-tcp.service
   systemctl daemon-reload
   systemctl enable datagate-pihole-after-tcp.service
-  systemctl start datagate-pihole-after-tcp.service \
+  systemctl restart datagate-pihole-after-tcp.service \
     || warn "datagate-pihole-after-tcp.service start failed — run: sudo systemctl status datagate-pihole-after-tcp"
 }
 
@@ -1102,7 +1116,7 @@ Stacks under: $INSTALL_HOME
   OpenVPN TCP WSS: https://${TCP_WSS_DOMAIN}/  (SNI → :8443 → host :${TCP_API_PORT})
   Pi-hole DNS:     ${PIHOLE_DNS_IP}:53 (VPN clients)
   Pi-hole admin:   http://${PIHOLE_DNS_IP}:${PIHOLE_WEB_PORT}/ (via VPN)
-  Pi-hole reboot:  systemd datagate-pihole-after-tcp.service (re-joins TCP netns)
+  Pi-hole reboot:  systemd datagate-pihole-after-tcp.service (watcher: boot + TCP start events)
 EOF
   if is_true "${INSTALL_XRAY:-false}"; then
     cat <<EOF

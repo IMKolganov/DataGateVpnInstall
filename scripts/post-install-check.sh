@@ -54,12 +54,53 @@ if docker inspect --format '{{.State.Running}}' datagate-pihole 2>/dev/null | gr
 else
   code="$(docker inspect --format '{{.State.ExitCode}}' datagate-pihole 2>/dev/null || echo missing)"
   err="$(docker inspect --format '{{.State.Error}}' datagate-pihole 2>/dev/null || true)"
-  fail "datagate-pihole not running (exit=$code ${err}) — fix: cd ~/pi-hole && docker compose up -d --force-recreate"
+  fail "datagate-pihole not running (exit=$code ${err}) — fix: sudo systemctl restart datagate-pihole-after-tcp.service"
 fi
+
+tcp_id="$(docker inspect -f '{{.Id}}' openvpn-tcp-wss 2>/dev/null || true)"
+pihole_mode="$(docker inspect -f '{{.HostConfig.NetworkMode}}' datagate-pihole 2>/dev/null || echo missing)"
+if [[ -n "$tcp_id" ]]; then
+  short="${tcp_id:0:12}"
+  if [[ "$pihole_mode" == "container:${tcp_id}" || "$pihole_mode" == "container:${short}" ]]; then
+    pass "datagate-pihole NetworkMode joins current openvpn-tcp-wss ($pihole_mode)"
+  else
+    fail "datagate-pihole NetworkMode=$pihole_mode — stale TCP netns; sudo systemctl restart datagate-pihole-after-tcp.service"
+  fi
+fi
+
 if systemctl is-enabled datagate-pihole-after-tcp.service >/dev/null 2>&1; then
   pass "datagate-pihole-after-tcp.service enabled"
 else
-  warn "datagate-pihole-after-tcp.service not enabled — reboot may leave Pi-hole on stale TCP netns"
+  fail "datagate-pihole-after-tcp.service not enabled — reboot / TCP recreate will leave Pi-hole on stale netns"
+fi
+if systemctl is-active datagate-pihole-after-tcp.service >/dev/null 2>&1; then
+  pass "datagate-pihole-after-tcp.service active (watcher)"
+else
+  fail "datagate-pihole-after-tcp.service not active — sudo systemctl restart datagate-pihole-after-tcp.service"
+fi
+if [[ -x "${INSTALL_HOME}/host/watch-pihole-after-tcp.sh" && -x "${INSTALL_HOME}/host/recreate-pihole-after-tcp.sh" ]]; then
+  pass "host Pi-hole after-tcp scripts present"
+else
+  fail "missing ${INSTALL_HOME}/host/{watch,recreate}-pihole-after-tcp.sh — re-run installer or copy from DataGateVpnInstall"
+fi
+
+# DNS must answer on TCP tun .1 (FTL may still be importing — short retry)
+if command -v dig >/dev/null 2>&1; then
+  dns_ok=0
+  for _try in 1 2 3 4 5; do
+    if dig @"$PIHOLE_DNS_IP" youtube.com +time=2 +tries=1 +short 2>/dev/null | grep -qE '^[0-9.]+$'; then
+      dns_ok=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$dns_ok" -eq 1 ]]; then
+    pass "Pi-hole DNS answers on ${PIHOLE_DNS_IP}:53"
+  else
+    fail "Pi-hole DNS no answer on ${PIHOLE_DNS_IP}:53 — wait for healthy or: docker logs datagate-pihole"
+  fi
+else
+  warn "dig not installed — skipped Pi-hole DNS probe"
 fi
 
 # Cipher + DCO via manager API

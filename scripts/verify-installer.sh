@@ -106,6 +106,51 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   fi
 fi
 
+pihole_unit="$home/host/datagate-pihole-after-tcp.service"
+if [[ -f "$pihole_unit" ]] && ! grep -qE '__[A-Z0-9_]+__' "$pihole_unit"; then
+  pass "pihole-after-tcp unit placeholders resolved"
+else
+  fail "pihole-after-tcp unit missing or has placeholders"
+fi
+if [[ -x "$home/host/recreate-pihole-after-tcp.sh" && -x "$home/host/watch-pihole-after-tcp.sh" ]]; then
+  pass "pihole-after-tcp host scripts rendered"
+else
+  fail "pihole-after-tcp host scripts missing"
+fi
+if grep -q 'watch-pihole-after-tcp.sh' "$pihole_unit"; then
+  pass "pihole-after-tcp unit ExecStart uses watcher"
+else
+  fail "pihole-after-tcp unit should ExecStart watch-pihole-after-tcp.sh"
+fi
+if command -v systemd-analyze >/dev/null 2>&1; then
+  if systemd-analyze verify "$pihole_unit" 2>/dev/null; then
+    pass "systemd-analyze verify pihole-after-tcp unit"
+  else
+    fail "systemd-analyze verify pihole-after-tcp unit"
+  fi
+fi
+# recreate must lock INSTALL_HOME against site.env override
+if grep -q 'LOCKED_INSTALL_HOME' "$home/host/recreate-pihole-after-tcp.sh"; then
+  pass "recreate locks INSTALL_HOME from systemd"
+else
+  fail "recreate-pihole-after-tcp.sh should lock INSTALL_HOME"
+fi
+bash -n "$home/host/recreate-pihole-after-tcp.sh" && pass "bash -n recreate-pihole-after-tcp.sh" || fail "bash -n recreate"
+bash -n "$home/host/watch-pihole-after-tcp.sh" && pass "bash -n watch-pihole-after-tcp.sh" || fail "bash -n watch"
+bash -n "$ROOT/scripts/diagnose-youtube-shorts-tcp.sh" && pass "bash -n diagnose-youtube-shorts-tcp.sh" || fail "bash -n diagnose"
+# diagnose must use $TCP_TUN_DEV in have_quic_rules (not hardcoded tun-tcp only)
+if grep -A3 'have_quic_rules' "$ROOT/scripts/diagnose-youtube-shorts-tcp.sh" | grep -q 'TCP_TUN_DEV'; then
+  pass "diagnose have_quic_rules uses TCP_TUN_DEV"
+else
+  fail "diagnose have_quic_rules still hardcodes tun-tcp"
+fi
+# wait-tun0 must start on TCP alone if UDP is late
+if grep -q 'starting Pi-hole on' "$home/pi-hole/wait-tun0-and-start.sh"; then
+  pass "wait-tun0 allows TCP-only start when UDP is late"
+else
+  fail "wait-tun0 should not block forever on missing UDP tun"
+fi
+
 echo "=== [6/7] load_env rejects overlapping identity subnet ==="
 overlap_env="$TEST_ROOT/site.env.overlap"
 cp "$TEST_ROOT/site.env" "$overlap_env"

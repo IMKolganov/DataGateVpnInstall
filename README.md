@@ -179,23 +179,24 @@ Installer applies automatically (no hel-style hand fixes):
 - `XRAY_DNS_IDENTITY_IFACE=eth0`
 - UFW: identity subnet → Pi-hole `:53` + forward
 - Host route + `datagate-xray-dns-route.service`
-- Pi-hole re-join after TCP recreate (`datagate-pihole-after-tcp.service`)
+- Pi-hole re-join after TCP recreate (`datagate-pihole-after-tcp.service` watches docker events)
 
-### Existing hosts — Pi-hole exit 128 after reboot
+### Existing hosts — Pi-hole exit 128 after reboot / TCP recreate
 
-`network_mode: container:openvpn-tcp-wss` stores a container **id**. After TCP recreate, Pi-hole exits 128 until force-recreated.
+`network_mode: container:openvpn-tcp-wss` stores a container **id**. After TCP recreate, Pi-hole exits 128 until force-recreated. The watcher re-runs on boot and on every `openvpn-tcp-wss` start.
 
 ```bash
 cd ~/DataGateVpnInstall && git pull && chmod +x scripts/*.sh
 mkdir -p ~/host
-cp scripts/recreate-pihole-after-tcp.sh ~/host/ && chmod +x ~/host/recreate-pihole-after-tcp.sh
+cp scripts/recreate-pihole-after-tcp.sh scripts/watch-pihole-after-tcp.sh ~/host/
+chmod +x ~/host/recreate-pihole-after-tcp.sh ~/host/watch-pihole-after-tcp.sh
 sed "s|__INSTALL_HOME__|$HOME|g" templates/host/datagate-pihole-after-tcp.service \
   | sudo tee /etc/systemd/system/datagate-pihole-after-tcp.service >/dev/null
 sudo systemctl unmask datagate-pihole-after-tcp.service 2>/dev/null || true
 sudo systemctl daemon-reload
 sudo systemctl enable --now datagate-pihole-after-tcp.service
-# dig only after healthy (~20–40s importing query DB is normal):
-# dig @$(ip -4 -br addr show tun-tcp | awk '{print $3}' | cut -d/ -f1) youtube.com +short
+systemctl status datagate-pihole-after-tcp.service --no-pager
+# optional: sudo ENV_FILE=~/site.env ~/DataGateVpnInstall/scripts/post-install-check.sh
 ```
 
 ### Dashboard only (not on the VPS)
@@ -269,7 +270,7 @@ Issued Xray profiles default to **VLESS xHTTP on `:2053`** (`XRAY_CLIENT_LINK_TR
 | Dashboard Xray Offline / **401 Unauthorized** on `:9443` | nginx `xray-api.conf` must `proxy_set_header Authorization $http_authorization;` (JWT otherwise never reaches manager). Also: ServerType must be **Xray** (audience `DataGateXRayManager`); `docker logs datagate-monitor-xray` must show public key fetched from `Backend__BaseUrl` |
 | Xray Pi-hole step 4 timeout | Xray Base URL must be `http://{PIHOLE_DNS_IP}:8080` (e.g. `10.51.44.1`), not `172.17.0.1` — Pi-hole listens on tun-tcp, not docker0 |
 | Xray DNS fails / step 5 forwarded=0 | `XRAY_DNS_IDENTITY_IFACE=eth0`; host route for identity subnet → xray container; UFW allow **identity subnet** (e.g. `10.80.2.0/24`) → `{PIHOLE_DNS_IP}:53` (not only docker CIDR — sendThrough uses identity IPs as source); re-issue link after sync |
-| Pi-hole exits (128) | TCP OpenVPN recreated; Pi-hole still on old container id. `cd ~/pi-hole && docker compose up -d --force-recreate`. Enable `datagate-pihole-after-tcp.service` so reboot auto-fixes |
+| Pi-hole exits (128) | TCP OpenVPN recreated; Pi-hole still on old container id. `sudo systemctl restart datagate-pihole-after-tcp.service` (or `cd ~/pi-hole && docker compose up -d --force-recreate`). Enable the watcher unit so reboot / TCP recreate auto-fixes |
 | Pi-hole exits | OpenVPN TCP must be Up first; `docker logs datagate-pihole` |
 | no SSH after UFW | reconnect from `ADMIN_SSH_IP` or console; installer also allows session IP |
 | no SSH after 2FA | console/VNC: restore `/etc/ssh/sshd_config.bak.*` and `/etc/pam.d/sshd.bak.*`, `systemctl restart ssh` |
