@@ -1,0 +1,20 @@
+[Unit]
+Description=DataGate recreate Pi-hole after OpenVPN TCP (fix netns join exit 128)
+Documentation=https://github.com/IMKolganov/DataGateVpnInstall
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+StartLimitBurst=15
+StartLimitIntervalSec=600
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=INSTALL_HOME=__INSTALL_HOME__
+Environment=ENV_FILE=__INSTALL_HOME__/site.env
+ExecStart=__INSTALL_HOME__/host/recreate-pihole-after-tcp.sh
+# TCP stack may come up after docker.service — retry
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=multi-user.target
