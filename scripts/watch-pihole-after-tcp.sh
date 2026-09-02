@@ -32,12 +32,13 @@ run_recreate() {
 run_recreate "service start" || true
 
 info "watching docker events for ${TCP_NAME} start"
-# --since 0s avoids a huge backlog of historical events after long uptime
+# --since 0s avoids a huge backlog of historical events after long uptime.
+# Docker Engine 29+ events templates use Actor.ID (plain .ID → exit 64 USAGE).
 docker events \
   --since 0s \
   --filter "name=${TCP_NAME}" \
   --filter "event=start" \
-  --format '{{.Time}} {{.ID}}' \
+  --format '{{.Time}} {{.Actor.ID}}' \
   | while read -r _ts _id; do
       # brief settle so compose healthchecks / tun device can appear
       sleep 2
