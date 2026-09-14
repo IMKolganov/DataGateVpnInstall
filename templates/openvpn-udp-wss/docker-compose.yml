@@ -30,6 +30,7 @@ services:
       OpenVpnManagement__Port: ${UDP_MANAGEMENT_PORT}
       OpenVpnManagement__Host: "localhost"
       BACKEND__BASEURL: ${BACKEND__BASEURL}
+      PUBLIC_IP: ${PUBLIC_IP}
       # Optional: public manager URL for dashboard self-announce (see site.env PUBLIC_API_URL)
       # PUBLIC_API_URL: ${PUBLIC_API_URL}
     healthcheck:

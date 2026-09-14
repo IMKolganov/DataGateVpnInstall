@@ -1,0 +1,22 @@
+[Unit]
+Description=DataGate keep Pi-hole joined to OpenVPN TCP netns (fix exit 128)
+Documentation=https://github.com/IMKolganov/DataGateVpnInstall
+After=docker.service docker.socket network-online.target
+Requires=docker.service
+Wants=network-online.target docker.socket
+StartLimitBurst=20
+StartLimitIntervalSec=600
+
+[Service]
+Type=simple
+Environment=INSTALL_HOME=__INSTALL_HOME__
+Environment=ENV_FILE=__INSTALL_HOME__/site.env
+# One-shot recreate on start, then docker events for openvpn-tcp-wss start
+ExecStart=__INSTALL_HOME__/host/watch-pihole-after-tcp.sh
+Restart=always
+RestartSec=10
+# Give first recreate time (TCP wait + Pi-hole FTL import)
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

@@ -106,6 +106,51 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   fi
 fi
 
+pihole_unit="$home/host/datagate-pihole-after-tcp.service"
+if [[ -f "$pihole_unit" ]] && ! grep -qE '__[A-Z0-9_]+__' "$pihole_unit"; then
+  pass "pihole-after-tcp unit placeholders resolved"
+else
+  fail "pihole-after-tcp unit missing or has placeholders"
+fi
+if [[ -x "$home/host/recreate-pihole-after-tcp.sh" && -x "$home/host/watch-pihole-after-tcp.sh" ]]; then
+  pass "pihole-after-tcp host scripts rendered"
+else
+  fail "pihole-after-tcp host scripts missing"
+fi
+if grep -q 'watch-pihole-after-tcp.sh' "$pihole_unit"; then
+  pass "pihole-after-tcp unit ExecStart uses watcher"
+else
+  fail "pihole-after-tcp unit should ExecStart watch-pihole-after-tcp.sh"
+fi
+if command -v systemd-analyze >/dev/null 2>&1; then
+  if systemd-analyze verify "$pihole_unit" 2>/dev/null; then
+    pass "systemd-analyze verify pihole-after-tcp unit"
+  else
+    fail "systemd-analyze verify pihole-after-tcp unit"
+  fi
+fi
+# recreate must lock INSTALL_HOME against site.env override
+if grep -q 'LOCKED_INSTALL_HOME' "$home/host/recreate-pihole-after-tcp.sh"; then
+  pass "recreate locks INSTALL_HOME from systemd"
+else
+  fail "recreate-pihole-after-tcp.sh should lock INSTALL_HOME"
+fi
+bash -n "$home/host/recreate-pihole-after-tcp.sh" && pass "bash -n recreate-pihole-after-tcp.sh" || fail "bash -n recreate"
+bash -n "$home/host/watch-pihole-after-tcp.sh" && pass "bash -n watch-pihole-after-tcp.sh" || fail "bash -n watch"
+bash -n "$ROOT/scripts/diagnose-youtube-shorts-tcp.sh" && pass "bash -n diagnose-youtube-shorts-tcp.sh" || fail "bash -n diagnose"
+# diagnose must use $TCP_TUN_DEV in have_quic_rules (not hardcoded tun-tcp only)
+if grep -A3 'have_quic_rules' "$ROOT/scripts/diagnose-youtube-shorts-tcp.sh" | grep -q 'TCP_TUN_DEV'; then
+  pass "diagnose have_quic_rules uses TCP_TUN_DEV"
+else
+  fail "diagnose have_quic_rules still hardcodes tun-tcp"
+fi
+# wait-tun0 must start on TCP alone if UDP is late
+if grep -q 'starting Pi-hole on' "$home/pi-hole/wait-tun0-and-start.sh"; then
+  pass "wait-tun0 allows TCP-only start when UDP is late"
+else
+  fail "wait-tun0 should not block forever on missing UDP tun"
+fi
+
 echo "=== [6/7] load_env rejects overlapping identity subnet ==="
 overlap_env="$TEST_ROOT/site.env.overlap"
 cp "$TEST_ROOT/site.env" "$overlap_env"
@@ -159,7 +204,7 @@ else
   pass "rejects placeholder XRAY_API_ALLOW_IPS"
 fi
 
-echo "=== [8/9] critical path guards (xray net labels, SSH IP under sudo, post-install DNS) ==="
+echo "=== [8/10] critical path guards (xray net labels, SSH IP under sudo, post-install DNS) ==="
 INSTALLER="$ROOT/scripts/install-vpn-host.sh"
 POST="$ROOT/scripts/post-install-check.sh"
 
@@ -183,7 +228,7 @@ else
   fail "post-install PIHOLE_DNS_IP not forced from TCP subnet"
 fi
 
-echo "=== [9/9] docker network label recreate (if docker available) ==="
+echo "=== [9/10] docker network label recreate (if docker available) ==="
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   n="datagate-verify-xray-net-$$"
   docker network rm "$n" >/dev/null 2>&1 || true
@@ -208,6 +253,190 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   fi
 else
   echo "SKIP: docker network label test (docker not available)"
+fi
+
+echo "=== [10/10] xHTTP extra inbound (render-config.sh) ==="
+xenv_xhttp="$home/datagate-monitor-xray/.env"
+if grep -q '^XRAY_XHTTP_ENABLED=true' "$xenv_xhttp" \
+  && grep -q '^XRAY_XHTTP_PORT=2053' "$xenv_xhttp"; then
+  pass "xray .env enables xHTTP inbound"
+else
+  fail "xray .env missing XRAY_XHTTP_* ($(grep XHTTP "$xenv_xhttp" || true))"
+fi
+
+# UFW must know about the same port the container publishes.
+if grep -q '^EXTRA_TCP_PORT=2053' "$home/host/.env"; then
+  pass "host/.env opens the xHTTP port for UFW"
+else
+  fail "host/.env EXTRA_TCP_PORT does not match XRAY_XHTTP_PORT ($(grep EXTRA_TCP_PORT "$home/host/.env" || true))"
+fi
+
+# A skipped xHTTP inbound is silent by design, so post-install must be the one to catch it.
+grep -q 'no xHTTP inbound on' "$POST" \
+  && pass "post-install asserts the xHTTP inbound was really rendered" \
+  || fail "post-install-check.sh does not verify the xHTTP inbound"
+
+# Docker publishes the xHTTP port, so a collision breaks `compose up` for the whole Xray
+# container — load_env must reject it before anything is written.
+for bad_port in 443 9443 8080; do
+  bad_xhttp="$TEST_ROOT/site.env.xhttp-$bad_port"
+  cp "$TEST_ROOT/site.env" "$bad_xhttp"
+  sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-xhttp-$bad_port|" "$bad_xhttp"
+  echo "XRAY_XHTTP_PORT=$bad_port" >>"$bad_xhttp"
+  if "$ROOT/scripts/install-vpn-host.sh" --render-only --env "$bad_xhttp" >/dev/null 2>&1; then
+    fail "should reject XRAY_XHTTP_PORT=$bad_port (already in use)"
+  else
+    pass "rejects XRAY_XHTTP_PORT=$bad_port"
+  fi
+done
+
+bad_xhttp_path="$TEST_ROOT/site.env.xhttp-path"
+cp "$TEST_ROOT/site.env" "$bad_xhttp_path"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-xhttp-path|" "$bad_xhttp_path"
+echo 'XRAY_XHTTP_PATH=api/v1/update' >>"$bad_xhttp_path"
+if "$ROOT/scripts/install-vpn-host.sh" --render-only --env "$bad_xhttp_path" >/dev/null 2>&1; then
+  fail "should reject XRAY_XHTTP_PATH without a leading slash"
+else
+  pass "rejects XRAY_XHTTP_PATH without a leading slash"
+fi
+
+# A free port must still render, and reach both compose publish and the container env.
+ok_xhttp="$TEST_ROOT/site.env.xhttp-ok"
+cp "$TEST_ROOT/site.env" "$ok_xhttp"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-xhttp-ok|" "$ok_xhttp"
+echo 'XRAY_XHTTP_PORT=2087' >>"$ok_xhttp"
+"$ROOT/scripts/install-vpn-host.sh" --render-only --env "$ok_xhttp" >/dev/null
+ok_home="$TEST_ROOT/home-xhttp-ok"
+if grep -q '^XRAY_XHTTP_PORT=2087' "$ok_home/datagate-monitor-xray/.env" \
+  && grep -q '^EXTRA_TCP_PORT=2087' "$ok_home/host/.env"; then
+  pass "custom xHTTP port reaches xray .env and UFW"
+else
+  fail "custom xHTTP port did not propagate ($(grep -h XHTTP "$ok_home/datagate-monitor-xray/.env" || true))"
+fi
+
+# Clients download their profile on every connect and the manager re-renders it, so this switch is what
+# actually moves a node's users between transports. Default must be xhttp (RF/Iran); wrong value must
+# not reach the container.
+if grep -q '^XRAY_CLIENT_LINK_TRANSPORT=xhttp' "$xenv_xhttp"; then
+  pass "xray .env defaults client link transport to xhttp"
+else
+  fail "xray .env should default XRAY_CLIENT_LINK_TRANSPORT=xhttp ($(grep CLIENT_LINK "$xenv_xhttp" || true))"
+fi
+
+grep -q 'XRAY_CLIENT_LINK_TRANSPORT=xhttp but XRAY_XHTTP_ENABLED' "$POST" \
+  && pass "post-install asserts client profiles point at a live inbound" \
+  || fail "post-install-check.sh does not verify XRAY_CLIENT_LINK_TRANSPORT"
+
+bad_link_transport="$TEST_ROOT/site.env.link-transport-bad"
+cp "$TEST_ROOT/site.env" "$bad_link_transport"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-link-bad|" "$bad_link_transport"
+echo 'XRAY_CLIENT_LINK_TRANSPORT=websocket' >>"$bad_link_transport"
+if "$ROOT/scripts/install-vpn-host.sh" --render-only --env "$bad_link_transport" >/dev/null 2>&1; then
+  fail "should reject an unknown XRAY_CLIENT_LINK_TRANSPORT"
+else
+  pass "rejects an unknown XRAY_CLIENT_LINK_TRANSPORT"
+fi
+
+# xhttp links against a disabled inbound would hand every user of the node a dead profile.
+link_without_inbound="$TEST_ROOT/site.env.link-transport-orphan"
+cp "$TEST_ROOT/site.env" "$link_without_inbound"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-link-orphan|" "$link_without_inbound"
+{
+  echo 'XRAY_CLIENT_LINK_TRANSPORT=xhttp'
+  echo 'XRAY_XHTTP_ENABLED=false'
+} >>"$link_without_inbound"
+if "$ROOT/scripts/install-vpn-host.sh" --render-only --env "$link_without_inbound" >/dev/null 2>&1; then
+  fail "should reject XRAY_CLIENT_LINK_TRANSPORT=xhttp without the xHTTP inbound"
+else
+  pass "rejects xhttp links when the xHTTP inbound is disabled"
+fi
+
+link_xhttp="$TEST_ROOT/site.env.link-transport-xhttp"
+cp "$TEST_ROOT/site.env" "$link_xhttp"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-link-xhttp|" "$link_xhttp"
+echo 'XRAY_CLIENT_LINK_TRANSPORT=xhttp' >>"$link_xhttp"
+"$ROOT/scripts/install-vpn-host.sh" --render-only --env "$link_xhttp" >/dev/null
+if grep -q '^XRAY_CLIENT_LINK_TRANSPORT=xhttp' "$TEST_ROOT/home-link-xhttp/datagate-monitor-xray/.env"; then
+  pass "xhttp client link transport reaches xray .env"
+else
+  fail "xhttp client link transport did not propagate"
+fi
+
+link_primary="$TEST_ROOT/site.env.link-transport-primary"
+cp "$TEST_ROOT/site.env" "$link_primary"
+sed -i "s|INSTALL_HOME=.*|INSTALL_HOME=${TEST_ROOT}/home-link-primary|" "$link_primary"
+echo 'XRAY_CLIENT_LINK_TRANSPORT=primary' >>"$link_primary"
+"$ROOT/scripts/install-vpn-host.sh" --render-only --env "$link_primary" >/dev/null
+if grep -q '^XRAY_CLIENT_LINK_TRANSPORT=primary' "$TEST_ROOT/home-link-primary/datagate-monitor-xray/.env"; then
+  pass "primary client link transport override reaches xray .env"
+else
+  fail "primary client link transport override did not propagate"
+fi
+
+# render-config.sh lives in the xray repo — absent when DataGateVpnInstall is checked out alone.
+RENDER="$ROOT/../../xray/scripts/xray/render-config.sh"
+if [[ -f "$RENDER" ]] && command -v jq >/dev/null 2>&1; then
+  xd="$TEST_ROOT/xray-render"
+  rm -rf "$xd"
+  mkdir -p "$xd"
+  # Contents do not matter: without the xray binary validate_config only checks structure.
+  : >"$xd/fullchain.pem"
+  : >"$xd/privkey.pem"
+  cfg="$xd/config.json"
+  render_env=(env
+    CONFIG_PATH="$cfg" ACCESS_LOG="$xd/access.log" ERROR_LOG="$xd/error.log"
+    PORT=443 DNS1=1.1.1.1 DNS2=8.8.8.8
+    XRAY_MGMT_HOST=127.0.0.1 XRAY_MGMT_PORT=10085 INBOUND_TAG=vless-in
+    XRAY_TRANSPORT_MODE=tls XRAY_ACCEPT_PROXY_PROTOCOL=true
+    XRAY_TLS_CERT_FILE="$xd/fullchain.pem" XRAY_TLS_KEY_FILE="$xd/privkey.pem")
+  vless_count() { jq '[.inbounds[] | select(.protocol == "vless")] | length' "$cfg"; }
+
+  "${render_env[@]}" XRAY_XHTTP_ENABLED=false bash "$RENDER" >/dev/null
+  [[ "$(vless_count)" == "1" ]] \
+    && pass "disabled xHTTP leaves a single VLESS inbound" \
+    || fail "disabled xHTTP changed the inbound count ($(vless_count))"
+
+  "${render_env[@]}" XRAY_XHTTP_ENABLED=true XRAY_XHTTP_PORT=2053 XRAY_XHTTP_PATH=/api/v1/update bash "$RENDER" >/dev/null
+  if [[ "$(vless_count)" == "2" ]] \
+    && [[ "$(jq -r '.inbounds[] | select(.tag == "vless-xhttp-in") | .streamSettings.network' "$cfg")" == "xhttp" ]] \
+    && [[ "$(jq -r '.inbounds[] | select(.tag == "vless-xhttp-in") | .streamSettings.security' "$cfg")" == "tls" ]] \
+    && [[ "$(jq -r '.inbounds[] | select(.tag == "vless-xhttp-in") | .streamSettings.xhttpSettings.path' "$cfg")" == "/api/v1/update" ]] \
+    && [[ "$(jq -r '.inbounds[] | select(.tag == "vless-xhttp-in") | .port' "$cfg")" == "2053" ]]; then
+    pass "xHTTP inbound rendered next to the primary one"
+  else
+    fail "xHTTP inbound missing or malformed ($(jq -c '[.inbounds[].tag]' "$cfg"))"
+  fi
+
+  # Reached directly, so PROXY protocol must stay off — otherwise every client handshake fails.
+  [[ "$(jq -r '.inbounds[] | select(.tag == "vless-xhttp-in") | .streamSettings.sockopt.acceptProxyProtocol // false' "$cfg")" == "false" ]] \
+    && pass "xHTTP inbound has no acceptProxyProtocol" \
+    || fail "xHTTP inbound got acceptProxyProtocol (nginx is not in front of it)"
+
+  # The primary inbound must survive the patch untouched.
+  [[ "$(jq -r '.inbounds[] | select(.tag == "vless-in") | .streamSettings.sockopt.acceptProxyProtocol' "$cfg")" == "true" ]] \
+    && pass "primary inbound keeps acceptProxyProtocol" \
+    || fail "primary inbound lost acceptProxyProtocol"
+
+  # Keepalive is applied after the xHTTP patch so both inbounds reap peers that vanished without FIN
+  # (otherwise Xray-core 26.x keeps them "online" forever — no TTL on the online map).
+  if [[ "$(jq -r '.inbounds[] | select(.tag == "vless-in") | .streamSettings.sockopt.tcpKeepAliveIdle' "$cfg")" == "60" ]] \
+    && [[ "$(jq -r '.inbounds[] | select(.tag == "vless-xhttp-in") | .streamSettings.sockopt.tcpKeepAliveIdle' "$cfg")" == "60" ]]; then
+    pass "TCP keepalive applied to primary and xHTTP inbounds"
+  else
+    fail "TCP keepalive missing after xHTTP patch ($(jq -c '[.inbounds[] | select(.protocol=="vless") | {tag, sockopt:.streamSettings.sockopt}]' "$cfg"))"
+  fi
+
+  "${render_env[@]}" XRAY_XHTTP_ENABLED=true XRAY_XHTTP_PORT=443 bash "$RENDER" >/dev/null 2>&1
+  [[ "$(vless_count)" == "1" ]] \
+    && pass "port collision with the primary inbound is skipped" \
+    || fail "xHTTP inbound was added on the primary port"
+
+  "${render_env[@]}" XRAY_XHTTP_ENABLED=true XRAY_XHTTP_PORT=2053 XRAY_TLS_CERT_FILE="$xd/missing.pem" bash "$RENDER" >/dev/null 2>&1
+  [[ "$(vless_count)" == "1" ]] \
+    && pass "missing certificate skips the xHTTP inbound" \
+    || fail "xHTTP inbound was added without a certificate"
+else
+  echo "SKIP: render-config.sh checks (xray repo or jq not available)"
 fi
 
 if [[ "$FAIL" -eq 0 ]]; then

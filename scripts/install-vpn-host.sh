@@ -219,6 +219,15 @@ XRAY_API_HTTPS_PORT=9443
 XRAY_API_ALLOW_IPS=${DASHBOARD_API_IP}
 XRAY_TRANSPORT_MODE=tls
 XRAY_ACCEPT_PROXY_PROTOCOL=true
+# Second VLESS inbound over xHTTP on its own port (own TLS, reached directly, not via nginx).
+# Looks like plain HTTP/2 traffic off :443, which is what Russian DPI currently polices hardest.
+XRAY_XHTTP_ENABLED=true
+XRAY_XHTTP_PORT=2053
+XRAY_XHTTP_PATH=/api/v1/update
+XRAY_XHTTP_MODE=auto
+# Issued profiles default to xHTTP (:2053) — RF/Iran DPI fingerprints steady TLS on :443.
+# Link files re-render on download; flip to primary only for soft-region nodes.
+XRAY_CLIENT_LINK_TRANSPORT=xhttp
 XRAY_HOST_GATEWAY=172.17.0.1
 XRAY_DNS1=${tcp_dns}
 XRAY_DNS2=${tcp_dns}
@@ -364,6 +373,37 @@ load_env() {
       [[ -z "$_ip" ]] && continue
       is_ipv4 "$_ip" || die "XRAY_API_ALLOW_IPS entry must be IPv4 (got: $_ip)"
     done
+    if is_true "${XRAY_XHTTP_ENABLED:-true}"; then
+      : "${XRAY_XHTTP_PORT:=2053}"
+      [[ "$XRAY_XHTTP_PORT" =~ ^[0-9]+$ ]] && ((XRAY_XHTTP_PORT >= 1 && XRAY_XHTTP_PORT <= 65535)) \
+        || die "XRAY_XHTTP_PORT must be 1-65535 (got: $XRAY_XHTTP_PORT)"
+      # Docker publishes this port, so a collision fails `compose up` and takes the whole Xray
+      # container down — reject it here instead of at deploy time.
+      local _busy _label
+      for _busy in \
+        "80:http certbot" "443:nginx SNI mux" "22:ssh" "8443:nginx local https" \
+        "${XRAY_API_HTTPS_PORT:-9443}:xray manager api" \
+        "${XRAY_MANAGER_HOST_PORT:-5012}:xray manager host port" \
+        "${TCP_PORT:-1195}:OpenVPN TCP" "${TCP_API_PORT:-5011}:OpenVPN TCP api" \
+        "${UDP_API_PORT:-5010}:OpenVPN UDP api" "${PIHOLE_WEB_PORT:-8080}:Pi-hole web"; do
+        _label="${_busy#*:}"
+        if [[ "$XRAY_XHTTP_PORT" == "${_busy%%:*}" ]]; then
+          die "XRAY_XHTTP_PORT=$XRAY_XHTTP_PORT is already used by $_label — pick a free port (default 2053)"
+        fi
+      done
+      : "${XRAY_XHTTP_PATH:=/api/v1/update}"
+      [[ "$XRAY_XHTTP_PATH" == /* ]] || die "XRAY_XHTTP_PATH must start with '/' (got: $XRAY_XHTTP_PATH)"
+      info "Xray xHTTP inbound: port=$XRAY_XHTTP_PORT path=$XRAY_XHTTP_PATH mode=${XRAY_XHTTP_MODE:-auto}"
+    fi
+    : "${XRAY_CLIENT_LINK_TRANSPORT:=xhttp}"
+    case "$XRAY_CLIENT_LINK_TRANSPORT" in
+      primary|xhttp) ;;
+      *) die "XRAY_CLIENT_LINK_TRANSPORT must be 'primary' or 'xhttp' (got: $XRAY_CLIENT_LINK_TRANSPORT)" ;;
+    esac
+    if [[ "$XRAY_CLIENT_LINK_TRANSPORT" == "xhttp" ]] && ! is_true "${XRAY_XHTTP_ENABLED:-true}"; then
+      die "XRAY_CLIENT_LINK_TRANSPORT=xhttp requires XRAY_XHTTP_ENABLED=true"
+    fi
+    info "Xray client link transport: $XRAY_CLIENT_LINK_TRANSPORT (issued {{vless_uri}})"
     info "Xray Pi-hole: BaseURL=$XRAY_PIHOLE_BASE_URL prefix=$XRAY_PIHOLE_CLIENT_SUBNET_PREFIX iface=eth0"
   fi
 
@@ -487,6 +527,12 @@ EOF
 
 write_host_env() {
   local dest="$1"
+  # Docker publishes the xHTTP port itself (its iptables rules bypass UFW), but the UFW rule keeps
+  # `ufw status` honest about what is reachable on this host.
+  local extra_tcp_port=""
+  if is_true "${INSTALL_XRAY:-false}" && is_true "${XRAY_XHTTP_ENABLED:-true}"; then
+    extra_tcp_port="${XRAY_XHTTP_PORT:-2053}"
+  fi
   cat >"$dest" <<EOF
 TCP_VPN_SUBNET=${TCP_VPN_SUBNET}
 UDP_VPN_SUBNET=${UDP_VPN_SUBNET}
@@ -505,7 +551,7 @@ PROMETHEUS_IP=${PROMETHEUS_IP:-}
 DOCKER_BRIDGE_CIDR=${DOCKER_BRIDGE_CIDR}
 NODE_EXPORTER_PORT=${NODE_EXPORTER_PORT:-9100}
 INSTALLER_SSH_CLIENT_IP=${INSTALLER_SSH_CLIENT_IP:-}
-EXTRA_TCP_PORT=
+EXTRA_TCP_PORT=${extra_tcp_port}
 EOF
   if is_true "${INSTALL_XRAY:-false}"; then
     cat >>"$dest" <<EOF
@@ -696,6 +742,16 @@ sync_xray_dns_route_assets() {
   render_file "$TEMPLATES/host/datagate-xray-dns-route.service" "$home/host/datagate-xray-dns-route.service"
 }
 
+# Pi-hole joins openvpn-tcp-wss netns by container id — recreate after TCP reboot/recreate.
+sync_pihole_after_tcp_assets() {
+  local home="$INSTALL_HOME"
+  mkdir -p "$home/host"
+  cp "$SCRIPT_DIR/recreate-pihole-after-tcp.sh" "$home/host/recreate-pihole-after-tcp.sh"
+  cp "$SCRIPT_DIR/watch-pihole-after-tcp.sh" "$home/host/watch-pihole-after-tcp.sh"
+  chmod +x "$home/host/recreate-pihole-after-tcp.sh" "$home/host/watch-pihole-after-tcp.sh"
+  render_file "$TEMPLATES/host/datagate-pihole-after-tcp.service" "$home/host/datagate-pihole-after-tcp.service"
+}
+
 write_xray_env() {
   local dest="$1"
   local nginx_certs="${NGINX_CERTBOT_CONF:-$INSTALL_HOME/nginx-docker/certbot/conf}"
@@ -711,6 +767,11 @@ XRAY_DOMAIN=${XRAY_DOMAIN}
 XRAY_TRANSPORT_MODE=${XRAY_TRANSPORT_MODE:-tls}
 XRAY_ACCEPT_PROXY_PROTOCOL=${XRAY_ACCEPT_PROXY_PROTOCOL:-true}
 XRAY_MANAGER_HOST_PORT=${XRAY_MANAGER_HOST_PORT:-5012}
+XRAY_XHTTP_ENABLED=${XRAY_XHTTP_ENABLED:-true}
+XRAY_XHTTP_PORT=${XRAY_XHTTP_PORT:-2053}
+XRAY_XHTTP_PATH=${XRAY_XHTTP_PATH:-/api/v1/update}
+XRAY_XHTTP_MODE=${XRAY_XHTTP_MODE:-auto}
+XRAY_CLIENT_LINK_TRANSPORT=${XRAY_CLIENT_LINK_TRANSPORT:-xhttp}
 XRAY_HOST_GATEWAY=${gw}
 XRAY_DNS1=${pihole_dns}
 XRAY_DNS2=${pihole_dns}
@@ -758,6 +819,10 @@ services:
     image: nginx:stable
     container_name: nginx
     restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     ports:
       - "80:80"
       - "443:443"
@@ -818,6 +883,7 @@ render_stacks() {
   fi
 
   write_host_env "$home/host/.env"
+  sync_pihole_after_tcp_assets
   cp "$ENV_FILE" "$home/site.env"
   cp "$ENV_FILE" "$home/site.env.installed"
 
@@ -901,12 +967,45 @@ start_openvpn() {
 }
 
 start_pihole() {
-  info "Starting Pi-hole (joins openvpn-tcp-wss netns)"
-  (cd "$INSTALL_HOME/pi-hole" && docker compose up -d)
-  sleep 3
+  info "Starting Pi-hole (joins openvpn-tcp-wss netns; force-recreate so join uses current TCP id)"
+  (cd "$INSTALL_HOME/pi-hole" && docker compose up -d --force-recreate)
+  local i st
+  info "waiting for datagate-pihole healthy/running (up to 180s)"
+  for ((i = 0; i < 180; i++)); do
+    st="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' datagate-pihole 2>/dev/null || echo missing)"
+    if [[ "$st" == "healthy" || "$st" == "running" ]]; then
+      info "datagate-pihole $st"
+      break
+    fi
+    sleep 1
+  done
   if ! docker inspect --format '{{.State.Running}}' datagate-pihole 2>/dev/null | grep -q true; then
-    warn "Pi-hole not running — often means OpenVPN TCP was recreated; check: docker logs datagate-pihole"
+    warn "Pi-hole not running — check: docker logs datagate-pihole"
+    warn "Fix: sudo systemctl restart datagate-pihole-after-tcp.service"
   fi
+  install_pihole_after_tcp_service || warn "datagate-pihole-after-tcp.service not installed"
+}
+
+install_pihole_after_tcp_service() {
+  sync_pihole_after_tcp_assets
+  local unit_src="$INSTALL_HOME/host/datagate-pihole-after-tcp.service"
+  [[ -f "$unit_src" ]] || return 1
+  [[ -x "$INSTALL_HOME/host/watch-pihole-after-tcp.sh" ]] || return 1
+  [[ -x "$INSTALL_HOME/host/recreate-pihole-after-tcp.sh" ]] || return 1
+  if grep -qE '__[A-Z0-9_]+__' "$unit_src"; then
+    warn "unresolved placeholders in $unit_src — fix INSTALL_HOME in site.env and re-render"
+    return 1
+  fi
+  info "Enabling systemd unit datagate-pihole-after-tcp (boot + docker events on TCP start)"
+  # Drop any prior mask (empty/failed install left unit masked on some hosts)
+  systemctl unmask datagate-pihole-after-tcp.service >/dev/null 2>&1 || true
+  # Stop old oneshot RemainAfterExit unit before replacing with long-running watcher
+  systemctl stop datagate-pihole-after-tcp.service >/dev/null 2>&1 || true
+  install -m 0644 "$unit_src" /etc/systemd/system/datagate-pihole-after-tcp.service
+  systemctl daemon-reload
+  systemctl enable datagate-pihole-after-tcp.service
+  systemctl restart datagate-pihole-after-tcp.service \
+    || warn "datagate-pihole-after-tcp.service start failed — run: sudo systemctl status datagate-pihole-after-tcp"
 }
 
 start_nginx() {
@@ -1021,6 +1120,7 @@ Stacks under: $INSTALL_HOME
   OpenVPN TCP WSS: https://${TCP_WSS_DOMAIN}/  (SNI → :8443 → host :${TCP_API_PORT})
   Pi-hole DNS:     ${PIHOLE_DNS_IP}:53 (VPN clients)
   Pi-hole admin:   http://${PIHOLE_DNS_IP}:${PIHOLE_WEB_PORT}/ (via VPN)
+  Pi-hole reboot:  systemd datagate-pihole-after-tcp.service (watcher: boot + TCP start events)
 EOF
   if is_true "${INSTALL_XRAY:-false}"; then
     cat <<EOF

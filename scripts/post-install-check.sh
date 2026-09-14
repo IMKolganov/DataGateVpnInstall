@@ -39,6 +39,49 @@ PIHOLE_DNS_IP="${TCP_VPN_SUBNET%.*}.1"
 
 echo "=== post-install check ($INSTALL_HOME) ==="
 
+# nginx ingress capacity — default Docker/nginx 1024 is too low for Xray multiplexed TCP
+nginx_conf="$INSTALL_HOME/nginx-docker/nginx/nginx.conf"
+if [[ -f "$nginx_conf" ]] && grep -qE 'worker_rlimit_nofile[[:space:]]+65535' "$nginx_conf"; then
+  pass "nginx.conf worker_rlimit_nofile 65535"
+else
+  fail "nginx.conf missing worker_rlimit_nofile 65535 — re-render from DataGateVpnInstall templates"
+fi
+if [[ -f "$nginx_conf" ]] && grep -qE 'worker_connections[[:space:]]+16384' "$nginx_conf"; then
+  pass "nginx.conf worker_connections 16384"
+else
+  fail "nginx.conf missing worker_connections 16384"
+fi
+if [[ -f "$nginx_conf" ]] && grep -qE 'worker_connections[[:space:]]+1024' "$nginx_conf"; then
+  fail "nginx.conf still has worker_connections 1024"
+fi
+nginx_compose="$INSTALL_HOME/nginx-docker/docker-compose.yml"
+if [[ -f "$nginx_compose" ]] && awk '
+  $1=="ulimits:" {u=1}
+  u && $1=="nofile:" {n=1}
+  n && $1=="soft:" && $2=="65535" {s=1}
+  n && $1=="hard:" && $2=="65535" {h=1}
+  END { exit (s && h) ? 0 : 1 }
+' "$nginx_compose"; then
+  pass "nginx compose ulimits.nofile 65535"
+else
+  fail "nginx compose missing ulimits.nofile 65535"
+fi
+if docker inspect --format '{{.State.Running}}' nginx 2>/dev/null | grep -q true; then
+  nofile="$(docker exec nginx sh -c 'ulimit -n' 2>/dev/null || true)"
+  if [[ "$nofile" == "65535" ]]; then
+    pass "nginx container ulimit -n = 65535"
+  else
+    fail "nginx container ulimit -n = ${nofile:-unknown} (want 65535) — cd \$INSTALL_HOME/nginx-docker && docker compose up -d --force-recreate nginx"
+  fi
+  if docker exec nginx sh -c 'cat /proc/1/limits' 2>/dev/null | grep -i 'open files' | grep -q '65535'; then
+    pass "nginx pid 1 Max open files 65535"
+  else
+    fail "nginx pid 1 Max open files is not 65535"
+  fi
+else
+  warn "nginx container not running — skipped live ulimit checks"
+fi
+
 # OpenVPN containers
 for name in openvpn-tcp-wss openvpn-udp-wss; do
   if docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null | grep -q true; then
@@ -47,6 +90,61 @@ for name in openvpn-tcp-wss openvpn-udp-wss; do
     fail "$name not running"
   fi
 done
+
+# Pi-hole must share openvpn-tcp-wss netns — Exited(128) after TCP recreate is a hard fail
+if docker inspect --format '{{.State.Running}}' datagate-pihole 2>/dev/null | grep -q true; then
+  pass "datagate-pihole running"
+else
+  code="$(docker inspect --format '{{.State.ExitCode}}' datagate-pihole 2>/dev/null || echo missing)"
+  err="$(docker inspect --format '{{.State.Error}}' datagate-pihole 2>/dev/null || true)"
+  fail "datagate-pihole not running (exit=$code ${err}) — fix: sudo systemctl restart datagate-pihole-after-tcp.service"
+fi
+
+tcp_id="$(docker inspect -f '{{.Id}}' openvpn-tcp-wss 2>/dev/null || true)"
+pihole_mode="$(docker inspect -f '{{.HostConfig.NetworkMode}}' datagate-pihole 2>/dev/null || echo missing)"
+if [[ -n "$tcp_id" ]]; then
+  short="${tcp_id:0:12}"
+  if [[ "$pihole_mode" == "container:${tcp_id}" || "$pihole_mode" == "container:${short}" ]]; then
+    pass "datagate-pihole NetworkMode joins current openvpn-tcp-wss ($pihole_mode)"
+  else
+    fail "datagate-pihole NetworkMode=$pihole_mode — stale TCP netns; sudo systemctl restart datagate-pihole-after-tcp.service"
+  fi
+fi
+
+if systemctl is-enabled datagate-pihole-after-tcp.service >/dev/null 2>&1; then
+  pass "datagate-pihole-after-tcp.service enabled"
+else
+  fail "datagate-pihole-after-tcp.service not enabled — reboot / TCP recreate will leave Pi-hole on stale netns"
+fi
+if systemctl is-active datagate-pihole-after-tcp.service >/dev/null 2>&1; then
+  pass "datagate-pihole-after-tcp.service active (watcher)"
+else
+  fail "datagate-pihole-after-tcp.service not active — sudo systemctl restart datagate-pihole-after-tcp.service"
+fi
+if [[ -x "${INSTALL_HOME}/host/watch-pihole-after-tcp.sh" && -x "${INSTALL_HOME}/host/recreate-pihole-after-tcp.sh" ]]; then
+  pass "host Pi-hole after-tcp scripts present"
+else
+  fail "missing ${INSTALL_HOME}/host/{watch,recreate}-pihole-after-tcp.sh — re-run installer or copy from DataGateVpnInstall"
+fi
+
+# DNS must answer on TCP tun .1 (FTL may still be importing — short retry)
+if command -v dig >/dev/null 2>&1; then
+  dns_ok=0
+  for _try in 1 2 3 4 5; do
+    if dig @"$PIHOLE_DNS_IP" youtube.com +time=2 +tries=1 +short 2>/dev/null | grep -qE '^[0-9.]+$'; then
+      dns_ok=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$dns_ok" -eq 1 ]]; then
+    pass "Pi-hole DNS answers on ${PIHOLE_DNS_IP}:53"
+  else
+    fail "Pi-hole DNS no answer on ${PIHOLE_DNS_IP}:53 — wait for healthy or: docker logs datagate-pihole"
+  fi
+else
+  warn "dig not installed — skipped Pi-hole DNS probe"
+fi
 
 # Cipher + DCO via manager API
 for port in "$TCP_API_PORT" "$UDP_API_PORT"; do
@@ -158,6 +256,61 @@ if is_true "${INSTALL_XRAY:-false}"; then
     else
       fail "Xray Pi-hole Base URL stale/wrong (got $base want http://${PIHOLE_DNS_IP}:8080)"
     fi
+
+    # render-config.sh skips the xHTTP inbound instead of failing the container (so a broken extra
+    # transport can never kill :443). That makes a missing inbound silent — assert it here.
+    xhttp_enabled="$(grep -E '^XRAY_XHTTP_ENABLED=' "$xray_env" | cut -d= -f2- || true)"
+    if is_true "${xhttp_enabled:-false}"; then
+      xhttp_port="$(grep -E '^XRAY_XHTTP_PORT=' "$xray_env" | cut -d= -f2- || true)"
+      xhttp_port="${xhttp_port:-2053}"
+      if [[ ! "$xhttp_port" =~ ^[0-9]+$ ]]; then
+        fail "XRAY_XHTTP_PORT is not numeric in $xray_env (got: $xhttp_port)"
+      else
+        xray_cfg="$INSTALL_HOME/datagate-monitor-xray/data/xray_data/xray/config.json"
+        if [[ -r "$xray_cfg" ]] && command -v jq >/dev/null 2>&1; then
+          if jq -e --argjson p "$xhttp_port" \
+            'any(.inbounds[]?; .port == $p and .streamSettings.network == "xhttp")' \
+            "$xray_cfg" >/dev/null 2>&1; then
+            pass "xHTTP inbound rendered on :$xhttp_port"
+          else
+            fail "XRAY_XHTTP_ENABLED=true but no xHTTP inbound on :$xhttp_port — docker logs datagate-monitor-xray shows why it was skipped"
+          fi
+        else
+          warn "cannot read $xray_cfg — skipped the xHTTP inbound assertion"
+        fi
+
+        if command -v ss >/dev/null 2>&1; then
+          if ss -lnt 2>/dev/null | grep -qE "[:.]${xhttp_port}[[:space:]]"; then
+            pass "xHTTP port :$xhttp_port is listening"
+          else
+            fail "nothing listening on :$xhttp_port — check compose port publish and the inbound"
+          fi
+        fi
+      fi
+    fi
+
+    # Which transport issued profiles point at. Profiles are re-rendered on download, so this decides
+    # what every client of this node gets on its next connect.
+    link_transport="$(grep -E '^XRAY_CLIENT_LINK_TRANSPORT=' "$xray_env" | cut -d= -f2- || true)"
+    link_transport="${link_transport:-xhttp}"
+    case "$link_transport" in
+      primary)
+        if is_true "${xhttp_enabled:-false}"; then
+          warn "client profiles still on primary TLS :443 while xHTTP is enabled — for RF/Iran set XRAY_CLIENT_LINK_TRANSPORT=xhttp and recreate xray"
+        fi
+        pass "client profiles point at the primary inbound"
+        ;;
+      xhttp)
+        if is_true "${xhttp_enabled:-false}"; then
+          pass "client profiles point at the xHTTP inbound (recommended for RF/Iran)"
+        else
+          fail "XRAY_CLIENT_LINK_TRANSPORT=xhttp but XRAY_XHTTP_ENABLED is not true — clients would get a dead profile"
+        fi
+        ;;
+      *)
+        fail "XRAY_CLIENT_LINK_TRANSPORT must be primary or xhttp (got: $link_transport)"
+        ;;
+    esac
   fi
 fi
 
