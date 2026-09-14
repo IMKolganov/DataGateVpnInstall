@@ -39,6 +39,49 @@ PIHOLE_DNS_IP="${TCP_VPN_SUBNET%.*}.1"
 
 echo "=== post-install check ($INSTALL_HOME) ==="
 
+# nginx ingress capacity — default Docker/nginx 1024 is too low for Xray multiplexed TCP
+nginx_conf="$INSTALL_HOME/nginx-docker/nginx/nginx.conf"
+if [[ -f "$nginx_conf" ]] && grep -qE 'worker_rlimit_nofile[[:space:]]+65535' "$nginx_conf"; then
+  pass "nginx.conf worker_rlimit_nofile 65535"
+else
+  fail "nginx.conf missing worker_rlimit_nofile 65535 — re-render from DataGateVpnInstall templates"
+fi
+if [[ -f "$nginx_conf" ]] && grep -qE 'worker_connections[[:space:]]+16384' "$nginx_conf"; then
+  pass "nginx.conf worker_connections 16384"
+else
+  fail "nginx.conf missing worker_connections 16384"
+fi
+if [[ -f "$nginx_conf" ]] && grep -qE 'worker_connections[[:space:]]+1024' "$nginx_conf"; then
+  fail "nginx.conf still has worker_connections 1024"
+fi
+nginx_compose="$INSTALL_HOME/nginx-docker/docker-compose.yml"
+if [[ -f "$nginx_compose" ]] && awk '
+  $1=="ulimits:" {u=1}
+  u && $1=="nofile:" {n=1}
+  n && $1=="soft:" && $2=="65535" {s=1}
+  n && $1=="hard:" && $2=="65535" {h=1}
+  END { exit (s && h) ? 0 : 1 }
+' "$nginx_compose"; then
+  pass "nginx compose ulimits.nofile 65535"
+else
+  fail "nginx compose missing ulimits.nofile 65535"
+fi
+if docker inspect --format '{{.State.Running}}' nginx 2>/dev/null | grep -q true; then
+  nofile="$(docker exec nginx sh -c 'ulimit -n' 2>/dev/null || true)"
+  if [[ "$nofile" == "65535" ]]; then
+    pass "nginx container ulimit -n = 65535"
+  else
+    fail "nginx container ulimit -n = ${nofile:-unknown} (want 65535) — cd \$INSTALL_HOME/nginx-docker && docker compose up -d --force-recreate nginx"
+  fi
+  if docker exec nginx sh -c 'cat /proc/1/limits' 2>/dev/null | grep -i 'open files' | grep -q '65535'; then
+    pass "nginx pid 1 Max open files 65535"
+  else
+    fail "nginx pid 1 Max open files is not 65535"
+  fi
+else
+  warn "nginx container not running — skipped live ulimit checks"
+fi
+
 # OpenVPN containers
 for name in openvpn-tcp-wss openvpn-udp-wss; do
   if docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null | grep -q true; then
