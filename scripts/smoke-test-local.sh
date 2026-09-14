@@ -237,6 +237,35 @@ compose_config "$RENDER_NO_XRAY/nginx-docker" nginx-no-xray
 compose_config "$RENDER_XRAY/datagate-monitor-xray" xray
 compose_config "$RENDER_XRAY/nginx-docker" nginx-xray
 
+echo "=== nginx FD / worker limits ==="
+for home in "$RENDER_NO_XRAY" "$RENDER_XRAY"; do
+  label="$(basename "$home")"
+  nginx_conf="$home/nginx-docker/nginx/nginx.conf"
+  nginx_compose="$home/nginx-docker/docker-compose.yml"
+  grep -qE 'worker_rlimit_nofile[[:space:]]+65535' "$nginx_conf" \
+    && pass "worker_rlimit_nofile 65535 ($label)" \
+    || fail "worker_rlimit_nofile 65535 missing ($label)"
+  grep -qE 'worker_connections[[:space:]]+16384' "$nginx_conf" \
+    && pass "worker_connections 16384 ($label)" \
+    || fail "worker_connections 16384 missing ($label)"
+  if grep -qE 'worker_connections[[:space:]]+1024' "$nginx_conf"; then
+    fail "old worker_connections 1024 still present ($label)"
+  else
+    pass "no worker_connections 1024 ($label)"
+  fi
+  if awk '
+    $1=="ulimits:" {u=1}
+    u && $1=="nofile:" {n=1}
+    n && $1=="soft:" && $2=="65535" {s=1}
+    n && $1=="hard:" && $2=="65535" {h=1}
+    END { exit (s && h) ? 0 : 1 }
+  ' "$nginx_compose"; then
+    pass "compose ulimits.nofile 65535 ($label)"
+  else
+    fail "compose ulimits.nofile 65535 missing ($label)"
+  fi
+done
+
 grep -q 'datagate-monitor-xray:443' "$RENDER_XRAY/nginx-docker/nginx/stream.d/sni-xray.conf" \
   && pass "stream → xray" || fail "stream xray upstream"
 grep -q 'host.docker.internal:5010' "$RENDER_NO_XRAY/nginx-docker/nginx/conf.d/udp-wss.conf" \
