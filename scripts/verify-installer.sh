@@ -54,6 +54,30 @@ for key in TCP_VPN_SUBNET UDP_VPN_SUBNET PIHOLE_DNS_IP XRAY_DNS_IDENTITY_SUBNET 
   fi
 done
 
+if grep -q '^PUBLIC_API_URL=https://s1-v.datagateapp.com/$' "$home/openvpn-udp-wss/.env" \
+  && grep -q '^PUBLIC_IP=203.0.113.50$' "$home/openvpn-udp-wss/.env"; then
+  pass "UDP stack announces HTTPS WSS domain"
+else
+  fail "UDP PUBLIC_API_URL/PUBLIC_IP wrong ($(grep -E 'PUBLIC_' "$home/openvpn-udp-wss/.env" || true))"
+fi
+if grep -q '^PUBLIC_API_URL=https://s4-v.datagateapp.com/$' "$home/openvpn-tcp-wss/.env"; then
+  pass "TCP stack announces HTTPS WSS domain"
+else
+  fail "TCP PUBLIC_API_URL wrong ($(grep PUBLIC_API_URL "$home/openvpn-tcp-wss/.env" || true))"
+fi
+if grep -q '^PUBLIC_API_URL=https://xs-v.datagateapp.com:9443/$' "$home/datagate-monitor-xray/.env"; then
+  pass "Xray stack announces HTTPS manager URL on :9443"
+else
+  fail "Xray PUBLIC_API_URL wrong ($(grep PUBLIC_API_URL "$home/datagate-monitor-xray/.env" || true))"
+fi
+if grep -q 'PUBLIC_API_URL: ${PUBLIC_API_URL}' "$home/openvpn-udp-wss/docker-compose.yml" \
+  && grep -q 'PUBLIC_API_URL: ${PUBLIC_API_URL}' "$home/openvpn-tcp-wss/docker-compose.yml" \
+  && grep -q 'PUBLIC_API_URL: ${PUBLIC_API_URL}' "$home/datagate-monitor-xray/docker-compose.yml"; then
+  pass "compose templates pass PUBLIC_API_URL into managers"
+else
+  fail "compose missing PUBLIC_API_URL env wiring"
+fi
+
 if grep -q '10.80.5.0/24' "$home/site.env" && [[ -f "$home/site.env" ]]; then
   pass "site.env present with identity subnet"
 else

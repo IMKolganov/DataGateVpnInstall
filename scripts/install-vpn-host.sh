@@ -477,9 +477,13 @@ render_file() {
 
 write_openvpn_tcp_env() {
   local dest="$1"
+  # Per-stack announce URL (TCP ≠ UDP). Do not reuse a single site.env PUBLIC_API_URL.
+  local api_url="https://${TCP_WSS_DOMAIN}/"
   cat >"$dest" <<EOF
 BACKEND__BASEURL=${BACKEND__BASEURL}
 ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
+PUBLIC_IP=${PUBLIC_IP}
+PUBLIC_API_URL=${api_url}
 TCP_VPN_SUBNET=${TCP_VPN_SUBNET}
 TCP_VPN_NETMASK=${TCP_VPN_NETMASK:-255.255.255.0}
 TCP_DNS1=${TCP_DNS1}
@@ -497,9 +501,13 @@ EOF
 
 write_openvpn_udp_env() {
   local dest="$1"
+  # Per-stack announce URL (UDP ≠ TCP). Do not reuse a single site.env PUBLIC_API_URL.
+  local api_url="https://${UDP_WSS_DOMAIN}/"
   cat >"$dest" <<EOF
 BACKEND__BASEURL=${BACKEND__BASEURL}
 ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
+PUBLIC_IP=${PUBLIC_IP}
+PUBLIC_API_URL=${api_url}
 UDP_VPN_SUBNET=${UDP_VPN_SUBNET}
 UDP_VPN_NETMASK=${UDP_VPN_NETMASK:-255.255.255.0}
 UDP_DNS1=${UDP_DNS1}
@@ -759,11 +767,16 @@ write_xray_env() {
   local prefix="${XRAY_DNS_IDENTITY_SUBNET%.*}."
   local gw="${XRAY_HOST_GATEWAY:-172.17.0.1}"
   local pihole_dns="${PIHOLE_DNS_IP:-${TCP_VPN_SUBNET%.*}.1}"
+  local api_https_port="${XRAY_API_HTTPS_PORT:-9443}"
+  # Prefer nginx HTTPS front (:9443), not the in-container API_PORT fallback.
+  local api_url="https://${XRAY_DOMAIN}:${api_https_port}/"
   cat >"$dest" <<EOF
 ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
 BACKEND__BASEURL=${BACKEND__BASEURL}
 PUBLIC_IP=${PUBLIC_IP}
+PUBLIC_API_URL=${api_url}
 XRAY_DOMAIN=${XRAY_DOMAIN}
+XRAY_API_HTTPS_PORT=${api_https_port}
 XRAY_TRANSPORT_MODE=${XRAY_TRANSPORT_MODE:-tls}
 XRAY_ACCEPT_PROXY_PROTOCOL=${XRAY_ACCEPT_PROXY_PROTOCOL:-true}
 XRAY_MANAGER_HOST_PORT=${XRAY_MANAGER_HOST_PORT:-5012}
@@ -1133,11 +1146,12 @@ EOF
   fi
   cat <<EOF
 
-Dashboard registration (do not mix types):
-  - UDP  type=OpenVPN  ApiUrl=https://${UDP_WSS_DOMAIN}/
-  - TCP  type=OpenVPN  ApiUrl=https://${TCP_WSS_DOMAIN}/
-$(is_true "${INSTALL_XRAY:-false}" && echo "  - Xray type=Xray (NOT OpenVPN)  ApiUrl=https://${XRAY_DOMAIN}:${XRAY_API_HTTPS_PORT:-9443}")
-$(is_true "${INSTALL_XRAY:-false}" && echo "  - Xray Pi-hole: BaseURL=http://${PIHOLE_DNS_IP}:${PIHOLE_WEB_PORT:-8080}  app password=PIHOLE_WEBPASSWORD  client subnet=${XRAY_PIHOLE_CLIENT_SUBNET_PREFIX}")
+Self-announce ApiUrl (written into each stack .env as PUBLIC_API_URL):
+  - UDP  OpenVPN  https://${UDP_WSS_DOMAIN}/
+  - TCP  OpenVPN  https://${TCP_WSS_DOMAIN}/
+$(is_true "${INSTALL_XRAY:-false}" && echo "  - Xray          https://${XRAY_DOMAIN}:${XRAY_API_HTTPS_PORT:-9443}/")
+  Approve pending discoveries as-is (or register manually with the same URLs; do not mix types).
+$(is_true "${INSTALL_XRAY:-false}" && echo "  Xray Pi-hole: BaseURL=http://${PIHOLE_DNS_IP}:${PIHOLE_WEB_PORT:-8080}  app password=PIHOLE_WEBPASSWORD  client subnet=${XRAY_PIHOLE_CLIENT_SUBNET_PREFIX}")
   - Backend: ${BACKEND__BASEURL}
   - Subnets: TCP ${TCP_VPN_SUBNET}/24 , UDP ${UDP_VPN_SUBNET}/24
 $(is_true "${INSTALL_XRAY:-false}" && echo "  - Identity: ${XRAY_DNS_IDENTITY_SUBNET}")

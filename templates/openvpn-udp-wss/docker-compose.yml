@@ -31,8 +31,8 @@ services:
       OpenVpnManagement__Host: "localhost"
       BACKEND__BASEURL: ${BACKEND__BASEURL}
       PUBLIC_IP: ${PUBLIC_IP}
-      # Optional: public manager URL for dashboard self-announce (see site.env PUBLIC_API_URL)
-      # PUBLIC_API_URL: ${PUBLIC_API_URL}
+      # HTTPS WSS domain — installer sets this from UDP_WSS_DOMAIN for dashboard self-announce
+      PUBLIC_API_URL: ${PUBLIC_API_URL}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${UDP_API_PORT}"]
       interval: 30s
