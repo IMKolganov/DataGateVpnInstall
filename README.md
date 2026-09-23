@@ -239,14 +239,25 @@ sudo ./scripts/install-vpn-host.sh
 
 ## After install — dashboard
 
+Managers self-announce with HTTPS domain ApiUrls (installer sets `PUBLIC_API_URL` per stack). Approve pending discoveries as-is, or register manually:
+
 | Service | ApiUrl / field |
 |---------|----------------|
 | OpenVPN UDP | `https://UDP_WSS_DOMAIN/` — type **OpenVPN** |
 | OpenVPN TCP | `https://TCP_WSS_DOMAIN/` — type **OpenVPN** |
-| Xray | `https://XRAY_DOMAIN:9443` — type **Xray** (not OpenVPN; wrong type → JWT audience mismatch → **401**) |
+| Xray | `https://XRAY_DOMAIN:9443/` — type **Xray** (not OpenVPN; wrong type → JWT audience mismatch → **401**) |
 | Xray Pi-hole Base URL | `http://{PIHOLE_DNS_IP}:8080` (e.g. `http://10.51.48.1:8080`) |
 | Xray Pi-hole app password | same as `PIHOLE_WEBPASSWORD` |
 | Xray Pi-hole client subnet | identity prefix, e.g. `10.80.3.` |
+
+Existing hosts installed before this fix still announce `http://PUBLIC_IP:5010|5011/` until you re-render and recreate managers:
+
+```bash
+sudo ./scripts/install-vpn-host.sh --render-only
+cd ~/openvpn-udp-wss && docker compose up -d --force-recreate
+cd ~/openvpn-tcp-wss && docker compose up -d --force-recreate
+# if Xray: cd ~/datagate-monitor-xray && docker compose up -d --force-recreate
+```
 
 Issued Xray profiles default to **VLESS xHTTP on `:2053`** (`XRAY_CLIENT_LINK_TRANSPORT=xhttp`) with SNI = `XRAY_DOMAIN` (your LE hostname — not microsoft/apple). Primary TLS on `:443` stays up as fallback; set `XRAY_CLIENT_LINK_TRANSPORT=primary` only for soft regions.
 
