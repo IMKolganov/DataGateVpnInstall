@@ -26,8 +26,8 @@ services:
       OpenVpnManagement__Host: "localhost"
       BACKEND__BASEURL: ${BACKEND__BASEURL}
       PUBLIC_IP: ${PUBLIC_IP}
-      # Optional: public manager URL for dashboard self-announce (see site.env PUBLIC_API_URL)
-      # PUBLIC_API_URL: ${PUBLIC_API_URL}
+      # HTTPS WSS domain — installer sets this from TCP_WSS_DOMAIN for dashboard self-announce
+      PUBLIC_API_URL: ${PUBLIC_API_URL}
       DCO: ${TCP_DCO:-true}
       CIPHER: ${TCP_CIPHER:-AES-128-GCM}
       DATA_CIPHERS: ${TCP_DATA_CIPHERS:-AES-128-GCM:CHACHA20-POLY1305}
