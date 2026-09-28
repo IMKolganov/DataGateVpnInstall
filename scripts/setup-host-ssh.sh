@@ -205,8 +205,15 @@ EOF
   #   KbdInteractiveAuthentication yes + UsePAM yes
   #   AuthenticationMethods publickey,keyboard-interactive  → key + TOTP
 
+  # Fresh cloud images sometimes miss PrivSep dir until ssh.service starts once.
+  if [[ ! -d /run/sshd ]]; then
+    info "Creating /run/sshd (privilege separation directory)"
+    mkdir -p /run/sshd
+    chmod 0755 /run/sshd
+  fi
+
   if command -v sshd >/dev/null 2>&1; then
-    sshd -t || die "sshd -t failed — restored? check /etc/ssh/sshd_config"
+    sshd -t || die "sshd -t failed — configs already written; fix and re-run: sudo $0 --user ${u:-USER} --apply-sshd-only"
   fi
 
   if systemctl is-active --quiet ssh.socket 2>/dev/null; then
