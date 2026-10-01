@@ -13,6 +13,7 @@
 #   sudo ./scripts/setup-host-ssh.sh --user YOURNAME --pubkey-from-user ubuntu
 #   sudo ./scripts/setup-host-ssh.sh --apply-sshd-only   # after .google_authenticator exists
 #   sudo ./scripts/setup-host-ssh.sh --user YOURNAME --skip-password
+#   sudo ./scripts/setup-host-ssh.sh --user YOURNAME --password-file /path --totp-secret-file /path --totp-out /path
 #
 # Keys already in /home/USER/.ssh/authorized_keys → omit --pubkey (same-file copy is a no-op).
 # Covered by scripts/smoke-test-ssh-scenarios.sh.
@@ -30,13 +31,16 @@ APPLY_SSHD_ONLY=0
 SKIP_PASSWORD=0
 SKIP_TOTP=0
 SKIP_SSHD=0
+PASSWORD_FILE=""
+TOTP_SECRET_FILE=""
+TOTP_OUT=""
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
 warn() { echo "WARN: $*" >&2; }
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 }
 
@@ -49,6 +53,9 @@ while [[ $# -gt 0 ]]; do
     --skip-password) SKIP_PASSWORD=1; shift ;;
     --skip-totp) SKIP_TOTP=1; shift ;;
     --skip-sshd) SKIP_SSHD=1; shift ;;
+    --password-file) PASSWORD_FILE="$2"; shift 2 ;;
+    --totp-secret-file) TOTP_SECRET_FILE="$2"; shift 2 ;;
+    --totp-out) TOTP_OUT="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) die "unknown arg: $1 (try --help)" ;;
   esac
@@ -86,6 +93,15 @@ ensure_user() {
 
 set_password() {
   local u="$1"
+  if [[ -n "$PASSWORD_FILE" ]]; then
+    [[ -f "$PASSWORD_FILE" ]] || die "password file not found: $PASSWORD_FILE"
+    local pass
+    pass="$(tr -d '\r\n' < "$PASSWORD_FILE")"
+    [[ -n "$pass" ]] || die "password file is empty"
+    printf '%s:%s\n' "$u" "$pass" | chpasswd
+    info "Password set for $u (sudo only — not used for SSH login)"
+    return 0
+  fi
   if [[ "$SKIP_PASSWORD" -eq 1 ]]; then
     local st
     st="$(passwd -S "$u" 2>/dev/null | awk '{print $2}')"
@@ -95,6 +111,14 @@ set_password() {
   fi
   info "Set a strong password for $u (used for sudo — not for SSH login)"
   passwd "$u"
+}
+
+write_totp_out() {
+  local value="$1"
+  [[ -n "$TOTP_OUT" ]] || return 0
+  umask 077
+  printf '%s\n' "$value" > "$TOTP_OUT"
+  chmod 0600 "$TOTP_OUT"
 }
 
 install_authorized_keys() {
@@ -144,6 +168,27 @@ enrol_totp() {
 
   if [[ -f "$secret" ]]; then
     info "TOTP already configured: $secret"
+    write_totp_out "$(head -n 1 "$secret" | tr -d '[:space:]')"
+    return 0
+  fi
+
+  if [[ -n "$TOTP_SECRET_FILE" ]]; then
+    [[ -f "$TOTP_SECRET_FILE" ]] || die "totp secret file not found: $TOTP_SECRET_FILE"
+    local b32
+    b32="$(tr -d '[:space:]' < "$TOTP_SECRET_FILE" | tr '[:lower:]' '[:upper:]')"
+    [[ "$b32" =~ ^[A-Z2-7]+=*$ ]] || die "totp secret is not base32"
+    umask 077
+    cat > "$secret" <<EOF
+${b32}
+" RATE_LIMIT 3 30
+" WINDOW_SIZE 3
+" DISALLOW_REUSE
+" TOTP_AUTH
+EOF
+    chmod 0400 "$secret"
+    chown "$u:$u" "$secret"
+    write_totp_out "$b32"
+    info "TOTP enrolled for $u (secret written to the authenticator file, not printed)"
     return 0
   fi
 
