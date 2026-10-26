@@ -45,20 +45,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Options that take a value: fail with a clear message instead of "unbound variable" / a silent `shift 2`.
+need_value() { [[ -n "${2:-}" && "${2:0:2}" != "--" ]] || die "$1 needs a value"; }
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --user) ADMIN_USER="$2"; shift 2 ;;
-    --password-file) PASSWORD_FILE="$2"; shift 2 ;;
-    --totp-secret-file) TOTP_SECRET_FILE="$2"; shift 2 ;;
-    --totp-out) TOTP_OUT="$2"; shift 2 ;;
-    --wazuh-manager) WAZUH_MANAGER="$2"; shift 2 ;;
-    --wazuh-password-file) WAZUH_PASSWORD_FILE="$2"; shift 2 ;;
-    --agent-name) AGENT_NAME="$2"; shift 2 ;;
-    --wazuh-version) WAZUH_VERSION="$2"; shift 2 ;;
-    --node-exporter-version) NODE_EXPORTER_VERSION="$2"; shift 2 ;;
-    --prometheus-ip) PROMETHEUS_IP="$2"; shift 2 ;;
-    --node-exporter-port) NODE_EXPORTER_PORT="$2"; shift 2 ;;
-    --grub-password-file) GRUB_PASSWORD_FILE="$2"; shift 2 ;;
+    --user) need_value "$1" "${2:-}"; ADMIN_USER="$2"; shift 2 ;;
+    --password-file) need_value "$1" "${2:-}"; PASSWORD_FILE="$2"; shift 2 ;;
+    --totp-secret-file) need_value "$1" "${2:-}"; TOTP_SECRET_FILE="$2"; shift 2 ;;
+    --totp-out) need_value "$1" "${2:-}"; TOTP_OUT="$2"; shift 2 ;;
+    --wazuh-manager) need_value "$1" "${2:-}"; WAZUH_MANAGER="$2"; shift 2 ;;
+    --wazuh-password-file) need_value "$1" "${2:-}"; WAZUH_PASSWORD_FILE="$2"; shift 2 ;;
+    --agent-name) need_value "$1" "${2:-}"; AGENT_NAME="$2"; shift 2 ;;
+    --wazuh-version) need_value "$1" "${2:-}"; WAZUH_VERSION="$2"; shift 2 ;;
+    --node-exporter-version) need_value "$1" "${2:-}"; NODE_EXPORTER_VERSION="$2"; shift 2 ;;
+    --prometheus-ip) need_value "$1" "${2:-}"; PROMETHEUS_IP="$2"; shift 2 ;;
+    --node-exporter-port) need_value "$1" "${2:-}"; NODE_EXPORTER_PORT="$2"; shift 2 ;;
+    --grub-password-file) need_value "$1" "${2:-}"; GRUB_PASSWORD_FILE="$2"; shift 2 ;;
     *) die "unknown arg: $1" ;;
   esac
 done

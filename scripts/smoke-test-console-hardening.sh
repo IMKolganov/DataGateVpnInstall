@@ -77,13 +77,15 @@ FAKE
 
 run_script() {
   DGSC_SKIP_ROOT_CHECK=1 \
-  DGSC_USER_HOME="$TMP/home/dgadmin" \
+  DGSC_USER_HOME="${TEST_USER_HOME-$TMP/home/dgadmin}" \
   DGSC_PAM_LOGIN="$TMP/pam.d/login" \
   DGSC_GRUB_D="$TMP/grub.d" \
   DGSC_GRUB_DEFAULT_D="$TMP/default/grub.d" \
   DGSC_GRUB_CFG="$TMP/boot/grub.cfg" \
   DGSC_PROFILE_D="$TMP/profile.d" \
   DGSC_STATE_DIR="$TMP/state" \
+  DGSC_GUARD_BIN="$TMP/sbin/datagate-grub-guard" \
+  DGSC_APT_CONF_D="$TMP/apt.conf.d" \
   DGSC_FAKE_TMP="$TMP" \
   DGSC_UPDATE_GRUB="$TMP/bin/update-grub" \
   DGSC_GRUB_MKPASSWD="$MKPASSWD" \
@@ -122,10 +124,12 @@ if [[ ! -e "$TMP/grub.pass" ]]; then pass "GRUB password file deleted"; else fai
 if [[ "$(stat -c %a "$TMP/grub.d/01_datagate_password")" == "700" ]]; then pass "01_datagate_password is 0700"; else fail "01_datagate_password mode"; fi
 if grep -q 'GRUB_DISABLE_RECOVERY="true"' "$TMP/default/grub.d/99-datagate-recovery.cfg"; then pass "recovery entries disabled"; else fail "recovery not disabled"; fi
 idle="$TMP/profile.d/99-datagate-idle-timeout.sh"
-if [[ -f "$idle" ]] && [[ "$(bash -c "source '$idle'; echo \$TMOUT")" == "600" ]]; then pass "TMOUT=600 after sourcing profile.d"; else fail "TMOUT not 600"; fi
-if bash -c "source '$idle'; TMOUT=0" 2>/dev/null; then fail "TMOUT can be overridden"; else pass "TMOUT is read-only"; fi
-if bash -c "source '$idle'; source '$idle'; [ \"\$TMOUT\" = 600 ]" 2>/dev/null; then pass "profile.d snippet can be sourced twice"; else fail "sourcing twice breaks the shell"; fi
-if sh -c ". '$idle'; [ \"\$TMOUT\" = 600 ]" 2>/dev/null; then pass "POSIX sh accepts the snippet"; else fail "POSIX sh rejects the snippet"; fi
+if [[ -f "$idle" ]] && [[ "$(bash --norc -i -c "source '$idle'; echo \$TMOUT" 2>/dev/null)" == "600" ]]; then pass "interactive shell: TMOUT=600"; else fail "interactive TMOUT not 600"; fi
+if bash --norc -i -c "source '$idle'; TMOUT=0" 2>/dev/null; then fail "TMOUT can be overridden"; else pass "TMOUT is read-only"; fi
+if bash --norc -i -c "source '$idle'; source '$idle'; [ \"\$TMOUT\" = 600 ]" 2>/dev/null; then pass "profile.d snippet can be sourced twice"; else fail "sourcing twice breaks the shell"; fi
+if sh -i -c ". '$idle'; [ \"\$TMOUT\" = 600 ]" 2>/dev/null </dev/null; then pass "POSIX sh accepts the snippet"; else fail "POSIX sh rejects the snippet"; fi
+if [[ "$(bash -c "source '$idle'; echo [\$TMOUT]")" == "[]" ]]; then pass "non-interactive shells (bash -lc, scripts) get no TMOUT"; else fail "TMOUT set in a non-interactive shell"; fi
+if [[ "$(bash --norc -i -c "source '$idle'; bash -c 'echo [\$TMOUT]'" 2>/dev/null)" == "[]" ]]; then pass "TMOUT is not exported to child scripts (read builtin unaffected)"; else fail "TMOUT leaks into child processes"; fi
 
 echo "=== scenario: re-run is idempotent ==="
 cp "$TMP/pam.d/login" "$TMP/login.first"
@@ -184,10 +188,61 @@ make_sandbox
 rm -f "$TMP/home/dgadmin/.google_authenticator"
 if run_script --user dgadmin --skip-grub >"$TMP/out.log" 2>&1; then
   fail "must refuse without .google_authenticator"
-elif ! grep -q 'pam_google_authenticator' "$TMP/pam.d/login"; then
-  pass "refuses and leaves PAM untouched"
+elif ! grep -q 'pam_google_authenticator' "$TMP/pam.d/login" && grep -q -- '--no-totp' "$TMP/out.log" \
+  && [[ ! -e "$TMP/profile.d/99-datagate-idle-timeout.sh" ]]; then
+  pass "refuses (hints at --no-totp) and changes nothing"
 else
-  fail "PAM changed although TOTP is missing"
+  fail "PAM/profile changed although TOTP is missing: $(cat "$TMP/out.log")"
+fi
+
+echo "=== scenario: host without 2FA (--no-totp) ==="
+make_sandbox
+rm -f "$TMP/home/dgadmin/.google_authenticator"
+cp "$TMP/pam.d/login" "$TMP/login.orig"
+if run_script --user dgadmin --no-totp --grub-password-file "$TMP/grub.pass" >"$TMP/out.log" 2>&1 \
+  && diff -q "$TMP/login.orig" "$TMP/pam.d/login" >/dev/null \
+  && [[ -f "$TMP/grub.d/01_datagate_password" && -f "$TMP/profile.d/99-datagate-idle-timeout.sh" ]]; then
+  pass "--no-totp: password-only console, GRUB + idle timeout still applied"
+else
+  fail "--no-totp fresh run: $(cat "$TMP/out.log")"
+fi
+
+echo "=== scenario: switch 2FA → no 2FA keeps the console usable ==="
+make_sandbox
+cp "$TMP/pam.d/login" "$TMP/login.orig"
+run_script --user dgadmin --skip-grub >/dev/null 2>&1
+rm -f "$TMP/home/dgadmin/.google_authenticator"   # admin turned SSH 2FA off
+if run_script --user dgadmin --no-totp --skip-grub >"$TMP/out.log" 2>&1 \
+  && ! grep -q 'pam_google_authenticator\|datagate: console TOTP' "$TMP/pam.d/login" \
+  && diff -q "$TMP/login.orig" "$TMP/pam.d/login" >/dev/null; then
+  pass "TOTP line removed, the rest of /etc/pam.d/login is exactly as before"
+else
+  fail "switch to --no-totp: $(cat "$TMP/out.log"); $(diff "$TMP/login.orig" "$TMP/pam.d/login")"
+fi
+printf 'JBSWY3DPEHPK3PXP\n" TOTP_AUTH\n' > "$TMP/home/dgadmin/.google_authenticator"
+if run_script --user dgadmin --skip-grub >/dev/null 2>&1 && [[ "$(grep -c pam_google_authenticator "$TMP/pam.d/login")" -eq 1 ]]; then
+  pass "switch back to 2FA adds exactly one TOTP line"
+else
+  fail "switch back to 2FA"
+fi
+
+echo "=== scenario: bad input is rejected before anything changes ==="
+make_sandbox
+cp "$TMP/pam.d/login" "$TMP/login.orig"
+printf 'short\n' > "$TMP/grub.pass"
+if run_script --user dgadmin --grub-password-file "$TMP/grub.pass" >"$TMP/out.log" 2>&1; then
+  fail "short GRUB password accepted"
+elif diff -q "$TMP/login.orig" "$TMP/pam.d/login" >/dev/null && [[ ! -e "$TMP/profile.d/99-datagate-idle-timeout.sh" && ! -e "$TMP/grub.d/01_datagate_password" ]]; then
+  pass "short GRUB password: error, PAM / GRUB / profile untouched"
+else
+  fail "short GRUB password changed files before failing"
+fi
+if TEST_USER_HOME= run_script --user nosuchuser-dgsc --skip-grub >"$TMP/out.log" 2>&1; then
+  fail "unknown user accepted"
+elif grep -q 'does not exist' "$TMP/out.log" && diff -q "$TMP/login.orig" "$TMP/pam.d/login" >/dev/null; then
+  pass "unknown user: clear error, nothing changed"
+else
+  fail "unknown user: $(cat "$TMP/out.log")"
 fi
 
 echo "=== scenario: --skip-grub keeps GRUB untouched ==="
@@ -204,6 +259,49 @@ echo "=== scenario: bad args ==="
 if run_script --user dgadmin >/dev/null 2>&1; then fail "missing grub option accepted"; else pass "requires --grub-password-file or --skip-grub"; fi
 if run_script --user dgadmin --skip-grub --idle-timeout 5 >/dev/null 2>&1; then fail "tiny timeout accepted"; else pass "rejects --idle-timeout < 60"; fi
 if bash "$SCRIPT" --user dgadmin --skip-grub >/dev/null 2>&1; then fail "non-root run should die"; else pass "non-root dies with must-be-root"; fi
+if run_script --user root --skip-grub >/dev/null 2>&1; then fail "--user root accepted"; else pass "rejects --user root"; fi
+if run_script --user dgadmin --skip-grub --grub-password-file "$TMP/grub.pass" >/dev/null 2>&1; then fail "--skip-grub + --grub-password-file accepted"; else pass "--skip-grub and --grub-password-file are exclusive"; fi
+if run_script --skip-grub --user 2>"$TMP/err.log" >/dev/null; then fail "--user without value accepted"; elif grep -q -- '--user needs a value' "$TMP/err.log"; then pass "option without value: clear error"; else fail "option without value: $(cat "$TMP/err.log")"; fi
+if run_script --user dgadmin --bogus >/dev/null 2>"$TMP/err.log"; then fail "unknown option accepted"; elif grep -q 'unknown arg: --bogus' "$TMP/err.log"; then pass "unknown option: clear error"; else fail "unknown option: $(cat "$TMP/err.log")"; fi
+
+echo "=== scenario: grub package update replaces 10_linux → apt guard restores --unrestricted ==="
+make_sandbox
+printf 'correct-horse-battery-staple\n' > "$TMP/grub.pass"
+run_script --user dgadmin --grub-password-file "$TMP/grub.pass" >/dev/null 2>&1
+guard="$TMP/sbin/datagate-grub-guard"
+if [[ -x "$guard" ]] && grep -q "$guard" "$TMP/apt.conf.d/99-datagate-grub-guard"; then pass "guard + DPkg::Post-Invoke hook installed"; else fail "guard not installed"; fi
+install -m 0755 "$TMP/state/10_linux.orig" "$TMP/grub.d/10_linux"   # package installed its own 10_linux
+DGSC_FAKE_TMP="$TMP" "$TMP/bin/update-grub"                # kernel postinst regenerates grub.cfg
+if grep '^menuentry' "$TMP/boot/grub.cfg" | grep -qv -- '--unrestricted'; then pass "(precondition) grub.cfg is restricted after the package update"; else fail "precondition"; fi
+if DGSC_FAKE_TMP="$TMP" "$guard" 2>/dev/null \
+  && grep -qE '^CLASS="[^"]*--unrestricted"' "$TMP/grub.d/10_linux" \
+  && ! grep '^menuentry' "$TMP/boot/grub.cfg" | grep -qv -- '--unrestricted' \
+  && [[ -f "$TMP/grub.d/01_datagate_password" ]]; then
+  pass "guard restored --unrestricted and kept the GRUB password"
+else
+  fail "guard did not restore unattended boot: $(cat "$TMP/boot/grub.cfg")"
+fi
+if DGSC_FAKE_TMP="$TMP" "$guard" 2>/dev/null && [[ "$(grep -c -- '--unrestricted' "$TMP/grub.d/10_linux")" -eq 1 ]]; then pass "guard is a no-op when nothing changed"; else fail "guard not idempotent"; fi
+install -m 0755 "$TMP/state/10_linux.orig" "$TMP/grub.d/10_linux"
+touch "$TMP/fail-update-grub"
+if DGSC_FAKE_TMP="$TMP" "$guard" 2>/dev/null && [[ ! -e "$TMP/grub.d/01_datagate_password" ]]; then
+  pass "guard drops the GRUB password when it cannot keep boot unattended (and never fails apt)"
+else
+  fail "guard failure path"
+fi
+
+echo "=== scenario: re-run after a package update refreshes the 10_linux backup ==="
+make_sandbox
+run_script --user dgadmin --grub-password-file "$TMP/grub.pass" >/dev/null 2>&1
+install -m 0755 "$TMP/state/10_linux.orig" "$TMP/grub.d/10_linux"
+printf '# grub-common 2.12-99 (new upstream)\n' >> "$TMP/grub.d/10_linux"
+printf 'correct-horse-battery-staple\n' > "$TMP/grub.pass"
+if run_script --user dgadmin --grub-password-file "$TMP/grub.pass" >"$TMP/out.log" 2>&1 \
+  && grep -q 'grub-common 2.12-99' "$TMP/state/10_linux.orig"; then
+  pass "backup is the current package version, not the stale one"
+else
+  fail "stale 10_linux backup: $(cat "$TMP/out.log")"
+fi
 
 echo "=== wiring: observability calls the console script and sudoers allows it ==="
 if grep -q 'setup-host-console.sh" --user "$ADMIN_USER" --grub-password-file' "$OBS" \

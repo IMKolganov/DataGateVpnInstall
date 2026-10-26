@@ -82,15 +82,30 @@ sudo ./scripts/setup-host-ssh.sh --user YOURNAME --apply-sshd-only
 ```bash
 sudo ./scripts/setup-host-console.sh --user YOURNAME --grub-password-file /path/to/grub.pass
 sudo ./scripts/setup-host-console.sh --user YOURNAME --skip-grub   # console TOTP + idle timeout only
+sudo ./scripts/setup-host-console.sh --user YOURNAME --no-totp --skip-grub   # host without 2FA
 ```
+
+With or without 2FA (Server Control always enrols 2FA; the "without" path is for manual hosts):
+
+| Host | SSH | Console |
+|------|-----|---------|
+| 2FA | `setup-host-ssh.sh --user U ...` → key + TOTP | `setup-host-console.sh --user U ...` → password + TOTP |
+| no 2FA | `setup-host-ssh.sh --user U --skip-totp` → key only (root/password SSH still off) | `setup-host-console.sh --user U --no-totp ...` → password only |
+| 2FA → off | `setup-host-ssh.sh --user U --apply-sshd-only --skip-totp` | `setup-host-console.sh --user U --no-totp ...` (removes the TOTP line — run it, or the console stays locked) |
+| off → 2FA | enrol TOTP, then `setup-host-ssh.sh --user U --apply-sshd-only` | `setup-host-console.sh --user U ...` |
+
+Both scripts check every input before changing anything; `setup-host-ssh.sh` restores the previous sshd/PAM
+files if `sshd -t` rejects the new ones, and re-runs do not need apt mirrors when the packages are installed.
 
 - Console login (`/etc/pam.d/login`) asks for the password **and** the same TOTP as SSH. Accounts without
   `~/.google_authenticator` (root included) cannot log in on the console.
 - GRUB superuser `dgsc-grub`: the host still boots unattended, but editing boot entries and recovery mode need
   the password (Server Control shows it under **SSH access**). Recovery entries are removed. If the generated
   `grub.cfg` would ask for a password at boot, the script rolls back.
-- Idle interactive shells (SSH and console) close after 10 minutes (`TMOUT=600`, read-only). Running commands
-  and non-interactive SSH commands are not affected.
+- Idle interactive shells (SSH and console) close after 10 minutes (`TMOUT=600`, read-only, not exported).
+  Running commands, non-interactive SSH commands and scripts started from the shell are not affected.
+- An apt `DPkg::Post-Invoke` hook (`/usr/local/sbin/datagate-grub-guard`) puts `--unrestricted` back if a grub
+  package update replaces `/etc/grub.d/10_linux`; if it cannot, it removes the GRUB password so the host still boots.
 - `X11Forwarding no`.
 
 ### 3) VPN install
@@ -313,4 +328,5 @@ Local smoke test (developer machine):
 ```bash
 ./scripts/smoke-test-local.sh
 ./scripts/verify-installer.sh
+./scripts/docker-test-ssh-console.sh   # real sshd + PAM as root in ubuntu:24.04 (needs docker + network)
 ```
