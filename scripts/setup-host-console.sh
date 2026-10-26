@@ -12,7 +12,7 @@
 #   sudo ./scripts/setup-host-console.sh --user dgadmin --skip-grub
 #
 # Paths and tools can be overridden with env vars (DGSC_PAM_LOGIN, DGSC_GRUB_D, DGSC_GRUB_DEFAULT_D,
-# DGSC_GRUB_CFG, DGSC_PROFILE_D, DGSC_UPDATE_GRUB, DGSC_GRUB_MKPASSWD, DGSC_SKIP_ROOT_CHECK) — used by
+# DGSC_GRUB_CFG, DGSC_PROFILE_D, DGSC_STATE_DIR, DGSC_UPDATE_GRUB, DGSC_GRUB_MKPASSWD, DGSC_SKIP_ROOT_CHECK) — used by
 # scripts/smoke-test-console-hardening.sh. Do not set them on a real host.
 set -euo pipefail
 
@@ -26,6 +26,9 @@ GRUB_D="${DGSC_GRUB_D:-/etc/grub.d}"
 GRUB_DEFAULT_D="${DGSC_GRUB_DEFAULT_D:-/etc/default/grub.d}"
 GRUB_CFG="${DGSC_GRUB_CFG:-/boot/grub/grub.cfg}"
 PROFILE_D="${DGSC_PROFILE_D:-/etc/profile.d}"
+# Backups live outside /etc/grub.d: grub-mkconfig runs every executable NN_* file there, so a copy of
+# 10_linux next to it would add a second, password-protected set of boot entries.
+STATE_DIR="${DGSC_STATE_DIR:-/var/lib/datagate-console}"
 UPDATE_GRUB="${DGSC_UPDATE_GRUB:-update-grub}"
 GRUB_MKPASSWD="${DGSC_GRUB_MKPASSWD:-grub-mkpasswd-pbkdf2}"
 
@@ -33,6 +36,8 @@ GRUB_SUPERUSER="dgsc-grub"
 PAM_MARKER="# datagate: console TOTP"
 GRUB_PASSWORD_SCRIPT="$GRUB_D/01_datagate_password"
 GRUB_LINUX_SCRIPT="$GRUB_D/10_linux"
+GRUB_LINUX_ORIG="$STATE_DIR/10_linux.orig"
+LEGACY_GRUB_LINUX_ORIG="$GRUB_D/10_linux.dgsc-orig"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
@@ -125,8 +130,9 @@ grub_cfg_boots_unattended() {
 rollback_grub() {
   warn "Rolling back the GRUB password so the host keeps booting unattended"
   rm -f "$GRUB_PASSWORD_SCRIPT"
-  if [[ -f "${GRUB_LINUX_SCRIPT}.dgsc-orig" ]]; then
-    cp -a "${GRUB_LINUX_SCRIPT}.dgsc-orig" "$GRUB_LINUX_SCRIPT"
+  if [[ -f "$GRUB_LINUX_ORIG" ]]; then
+    cp -p "$GRUB_LINUX_ORIG" "$GRUB_LINUX_SCRIPT"
+    chmod 0755 "$GRUB_LINUX_SCRIPT"
   fi
   "$UPDATE_GRUB" >/dev/null 2>&1 || warn "$UPDATE_GRUB failed during rollback — check $GRUB_CFG before rebooting"
 }
@@ -149,7 +155,13 @@ apply_grub_password() {
   [[ "$hash" == grub.pbkdf2.* ]] || die "$GRUB_MKPASSWD returned no pbkdf2 hash"
 
   # Boot entries from 10_linux stay unrestricted (unattended reboot); everything else needs the password.
-  [[ -f "${GRUB_LINUX_SCRIPT}.dgsc-orig" ]] || cp -a "$GRUB_LINUX_SCRIPT" "${GRUB_LINUX_SCRIPT}.dgsc-orig"
+  install -d -m 0700 "$STATE_DIR"
+  if [[ -f "$LEGACY_GRUB_LINUX_ORIG" ]]; then
+    [[ -f "$GRUB_LINUX_ORIG" ]] || cp -p "$LEGACY_GRUB_LINUX_ORIG" "$GRUB_LINUX_ORIG"
+    rm -f "$LEGACY_GRUB_LINUX_ORIG"
+  fi
+  [[ -f "$GRUB_LINUX_ORIG" ]] || cp -p "$GRUB_LINUX_SCRIPT" "$GRUB_LINUX_ORIG"
+  chmod 0600 "$GRUB_LINUX_ORIG"
   if ! grep -qE '^CLASS="[^"]*--unrestricted' "$GRUB_LINUX_SCRIPT"; then
     grep -qE '^CLASS="' "$GRUB_LINUX_SCRIPT" || die "$GRUB_LINUX_SCRIPT has no CLASS= line — cannot keep boot unrestricted"
     sed -i -E 's/^CLASS="([^"]*)"/CLASS="\1 --unrestricted"/' "$GRUB_LINUX_SCRIPT"

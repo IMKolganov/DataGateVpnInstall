@@ -36,22 +36,34 @@ EOF
   else
     printf '#!/bin/sh\nCLASS="--class gnu-linux --class gnu --class os"\n' > "$TMP/grub.d/10_linux"
   fi
+  chmod 0755 "$TMP/grub.d/10_linux"
   printf 'JBSWY3DPEHPK3PXP\n" TOTP_AUTH\n' > "$TMP/home/dgadmin/.google_authenticator"
   printf 'correct-horse-battery-staple\n' > "$TMP/grub.pass"
 
-  # Fake update-grub: password script output + one Linux entry built from 10_linux's CLASS line.
-  cat > "$TMP/bin/update-grub" <<EOF
+  # Fake update-grub that behaves like grub-mkconfig: runs every executable NN_* generator in grub.d
+  # (skipping README / *~ / *.dpkg-*); any 10_linux* file emits one Linux entry built from its own CLASS line.
+  cat > "$TMP/bin/update-grub" <<'FAKE'
 #!/usr/bin/env bash
 set -e
-[[ -f "$TMP/fail-update-grub" ]] && exit 1
+T="$DGSC_FAKE_TMP"
+[[ -f "$T/fail-update-grub" ]] && exit 1
 {
-  if [[ -x "$TMP/grub.d/01_datagate_password" ]]; then "$TMP/grub.d/01_datagate_password"; fi
-  eval "\$(grep -m1 '^CLASS=' "$TMP/grub.d/10_linux")"
-  [[ -f "$TMP/force-restricted" ]] && CLASS="--class gnu-linux --class gnu --class os"
-  echo "menuentry 'Ubuntu' --class ubuntu \$CLASS \\\$menuentry_id_option 'gnulinux-simple' {"
-  echo "}"
-} > "$TMP/boot/grub.cfg"
-EOF
+  for gen in "$T"/grub.d/[0-9][0-9]_*; do
+    [[ -x "$gen" ]] || continue
+    case "$gen" in *~|*.dpkg-*|*README*) continue ;; esac
+    case "$(basename "$gen")" in
+      10_linux*)
+        CLASS=""
+        eval "$(grep -m1 '^CLASS=' "$gen")"
+        [[ -f "$T/force-restricted" ]] && CLASS="--class gnu-linux --class gnu --class os"
+        echo "menuentry 'Ubuntu' --class ubuntu $CLASS \$menuentry_id_option 'gnulinux-simple' {"
+        echo "}"
+        ;;
+      *) "$gen" ;;
+    esac
+  done
+} > "$T/boot/grub.cfg"
+FAKE
   chmod +x "$TMP/bin/update-grub"
 
   if command -v grub-mkpasswd-pbkdf2 >/dev/null 2>&1; then
@@ -71,6 +83,8 @@ run_script() {
   DGSC_GRUB_DEFAULT_D="$TMP/default/grub.d" \
   DGSC_GRUB_CFG="$TMP/boot/grub.cfg" \
   DGSC_PROFILE_D="$TMP/profile.d" \
+  DGSC_STATE_DIR="$TMP/state" \
+  DGSC_FAKE_TMP="$TMP" \
   DGSC_UPDATE_GRUB="$TMP/bin/update-grub" \
   DGSC_GRUB_MKPASSWD="$MKPASSWD" \
     bash "$SCRIPT" "$@"
@@ -122,6 +136,23 @@ if run_script --user dgadmin --grub-password-file "$TMP/grub.pass" >"$TMP/out.lo
   pass "second run changes nothing in PAM and does not double --unrestricted"
 else
   fail "second run not idempotent: $(cat "$TMP/out.log")"
+fi
+
+echo "=== scenario: a 10_linux backup must never become a second GRUB generator (found on a real VM) ==="
+make_sandbox
+cp -p "$TMP/grub.d/10_linux" "$TMP/grub.d/10_linux.dgsc-orig"   # left behind by the first version of this script
+if run_script --user dgadmin --grub-password-file "$TMP/grub.pass" >"$TMP/out.log" 2>&1 \
+  && [[ ! -e "$TMP/grub.d/10_linux.dgsc-orig" && -f "$TMP/state/10_linux.orig" ]] \
+  && [[ "$(grep -c '^menuentry' "$TMP/boot/grub.cfg")" -eq 1 ]] \
+  && ! grep '^menuentry' "$TMP/boot/grub.cfg" | grep -qv -- '--unrestricted'; then
+  pass "legacy backup moved out of grub.d; the only Linux entry is --unrestricted"
+else
+  fail "backup in grub.d: $(ls "$TMP/grub.d") / $(cat "$TMP/out.log") / $(cat "$TMP/boot/grub.cfg" 2>/dev/null)"
+fi
+if ls "$TMP/grub.d" | grep -qvE '^(01_datagate_password|10_linux)$'; then
+  fail "unexpected files in grub.d: $(ls "$TMP/grub.d")"
+else
+  pass "nothing but generators in grub.d"
 fi
 
 echo "=== scenario: generated grub.cfg would block unattended boot → rollback ==="
