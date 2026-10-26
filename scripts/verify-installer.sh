@@ -12,6 +12,9 @@ fail() { echo "FAIL: $*" >&2; FAIL=1; }
 echo "=== [0/7] smoke-test-ssh-scenarios.sh ==="
 "$ROOT/scripts/smoke-test-ssh-scenarios.sh"
 
+echo "=== [0b/7] smoke-test-console-hardening.sh ==="
+"$ROOT/scripts/smoke-test-console-hardening.sh"
+
 echo "=== [1/7] smoke-test-local.sh ==="
 "$ROOT/scripts/smoke-test-local.sh"
 

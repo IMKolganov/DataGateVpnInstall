@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Node exporter + Wazuh agent + admin user (SSH key + TOTP, sudo password).
+# Node exporter + Wazuh agent + admin user (SSH key + TOTP, sudo password) + console hardening.
 # Called by DataGate Server Control after install-vpn-host.sh. Idempotent.
 #
 #   sudo ./scripts/setup-observability.sh \
@@ -12,7 +12,8 @@
 #     --agent-name dg-host \
 #     --wazuh-version 4.14.5 \
 #     --node-exporter-version 1.8.2 \
-#     --prometheus-ip PROMETHEUS_IP
+#     --prometheus-ip PROMETHEUS_IP \
+#     [--grub-password-file /path]   # omitted → console TOTP + idle timeout without a GRUB password
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +30,7 @@ WAZUH_VERSION="4.14.5"
 NODE_EXPORTER_VERSION="1.8.2"
 PROMETHEUS_IP=""
 NODE_EXPORTER_PORT="9100"
+GRUB_PASSWORD_FILE=""
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
@@ -37,6 +39,9 @@ cleanup() {
   [[ -n "${PASSWORD_FILE:-}" ]] && rm -f "$PASSWORD_FILE"
   [[ -n "${TOTP_SECRET_FILE:-}" ]] && rm -f "$TOTP_SECRET_FILE"
   [[ -n "${WAZUH_PASSWORD_FILE:-}" ]] && rm -f "$WAZUH_PASSWORD_FILE"
+  [[ -n "${GRUB_PASSWORD_FILE:-}" ]] && rm -f "$GRUB_PASSWORD_FILE"
+  # An EXIT trap's status becomes the script's exit code — a skipped `&&` above must not turn success into 1.
+  return 0
 }
 trap cleanup EXIT
 
@@ -53,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --node-exporter-version) NODE_EXPORTER_VERSION="$2"; shift 2 ;;
     --prometheus-ip) PROMETHEUS_IP="$2"; shift 2 ;;
     --node-exporter-port) NODE_EXPORTER_PORT="$2"; shift 2 ;;
+    --grub-password-file) GRUB_PASSWORD_FILE="$2"; shift 2 ;;
     *) die "unknown arg: $1" ;;
   esac
 done
@@ -62,6 +68,7 @@ done
 [[ "$AGENT_NAME" =~ ^[a-z0-9][a-z0-9._-]{0,62}$ ]] || die "invalid agent name: $AGENT_NAME"
 [[ "$(id -u)" -eq 0 ]] || die "run as root"
 [[ -x "$SCRIPT_DIR/setup-host-ssh.sh" || -f "$SCRIPT_DIR/setup-host-ssh.sh" ]] || die "missing setup-host-ssh.sh"
+[[ -f "$SCRIPT_DIR/setup-host-console.sh" ]] || die "missing setup-host-console.sh"
 
 install_node_exporter() {
   local arch cur=""
@@ -193,7 +200,7 @@ write_sudoers() {
   f=/etc/sudoers.d/datagate-installer
   cat > "$tmp" <<EOF
 # Server Control re-install after SSH is key + TOTP. Interactive sudo still asks for the password.
-${ADMIN_USER} ALL=(root) NOPASSWD: ${ROOT_DIR}/scripts/install-vpn-host.sh, ${ROOT_DIR}/scripts/setup-observability.sh, ${ROOT_DIR}/scripts/setup-host-ssh.sh
+${ADMIN_USER} ALL=(root) NOPASSWD: ${ROOT_DIR}/scripts/install-vpn-host.sh, ${ROOT_DIR}/scripts/setup-observability.sh, ${ROOT_DIR}/scripts/setup-host-ssh.sh, ${ROOT_DIR}/scripts/setup-host-console.sh
 EOF
   visudo -cf "$tmp"
   install -m 0440 "$tmp" "$f"
@@ -212,4 +219,11 @@ bash "$SCRIPT_DIR/setup-host-ssh.sh" \
   --totp-secret-file "$TOTP_SECRET_FILE" \
   --totp-out "$TOTP_OUT"
 
-info "Observability and SSH 2FA finished"
+info "Hardening the console for ${ADMIN_USER} (TOTP on console login, GRUB password, idle timeout)"
+if [[ -n "$GRUB_PASSWORD_FILE" ]]; then
+  bash "$SCRIPT_DIR/setup-host-console.sh" --user "$ADMIN_USER" --grub-password-file "$GRUB_PASSWORD_FILE"
+else
+  bash "$SCRIPT_DIR/setup-host-console.sh" --user "$ADMIN_USER" --skip-grub
+fi
+
+info "Observability, SSH 2FA and console hardening finished"

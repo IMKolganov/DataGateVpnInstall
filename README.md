@@ -75,6 +75,24 @@ Re-apply sshd/PAM later (if you skipped it):
 sudo ./scripts/setup-host-ssh.sh --user YOURNAME --apply-sshd-only
 ```
 
+### 2b) Console hardening (UpCloud web / serial console)
+
+`setup-observability.sh` runs this automatically after step 2. Manually:
+
+```bash
+sudo ./scripts/setup-host-console.sh --user YOURNAME --grub-password-file /path/to/grub.pass
+sudo ./scripts/setup-host-console.sh --user YOURNAME --skip-grub   # console TOTP + idle timeout only
+```
+
+- Console login (`/etc/pam.d/login`) asks for the password **and** the same TOTP as SSH. Accounts without
+  `~/.google_authenticator` (root included) cannot log in on the console.
+- GRUB superuser `dgsc-grub`: the host still boots unattended, but editing boot entries and recovery mode need
+  the password (Server Control shows it under **SSH access**). Recovery entries are removed. If the generated
+  `grub.cfg` would ask for a password at boot, the script rolls back.
+- Idle interactive shells (SSH and console) close after 10 minutes (`TMOUT=600`, read-only). Running commands
+  and non-interactive SSH commands are not affected.
+- `X11Forwarding no`.
+
 ### 3) VPN install
 
 ```bash
@@ -284,7 +302,8 @@ Issued Xray profiles default to **VLESS xHTTP on `:2053`** (`XRAY_CLIENT_LINK_TR
 | Pi-hole exits (128) | TCP OpenVPN recreated; Pi-hole still on old container id. `sudo systemctl restart datagate-pihole-after-tcp.service` (or `cd ~/pi-hole && docker compose up -d --force-recreate`). Enable the watcher unit so reboot / TCP recreate auto-fixes |
 | Pi-hole exits | OpenVPN TCP must be Up first; `docker logs datagate-pihole` |
 | no SSH after UFW | reconnect from `ADMIN_SSH_IP` or console; installer also allows session IP |
-| no SSH after 2FA | console/VNC: restore `/etc/ssh/sshd_config.bak.*` and `/etc/pam.d/sshd.bak.*`, `systemctl restart ssh` |
+| no SSH after 2FA | console: log in with password + TOTP, restore `/etc/ssh/sshd_config.bak.*` and `/etc/pam.d/sshd.bak.*`, `systemctl restart ssh` |
+| TOTP lost (SSH and console both refuse) | reboot from the UpCloud console, press `e` in GRUB, enter `dgsc-grub` + the GRUB password from **SSH access**, add `init=/bin/bash` to the `linux` line, boot (Ctrl+X), `mount -o remount,rw /`, restore `/etc/pam.d/login.bak.*`; or **Recreate** the server |
 | Xray won't start | certs must exist under `nginx-docker/certbot/conf/live/XRAY_DOMAIN/` |
 | OpenVPN slow / high CPU | 1 vCPU + WSS caps ~50–100 Mbit; installer picks AES-128-GCM if AES-NI else ChaCha; prefer Xray for speed; DCO: `lsmod \| grep ovpn` |
 | Xray DNS route unit failed | Prefer `host/setup-xray-dns-identity-route.sh` over inline `bash -c`; check `journalctl -xeu datagate-xray-dns-route` |

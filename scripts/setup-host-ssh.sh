@@ -239,6 +239,7 @@ PubkeyAuthentication yes
 AuthenticationMethods publickey,keyboard-interactive
 ChallengeResponseAuthentication yes
 UsePAM yes
+X11Forwarding no
 EOF
   chmod 0644 /etc/ssh/sshd_config.d/00-datagate-hardening.conf
   info "Wrote /etc/ssh/sshd_config.d/00-datagate-hardening.conf (overrides cloud-init)"
