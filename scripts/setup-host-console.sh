@@ -6,7 +6,10 @@
 #   2) GRUB superuser password: normal boot stays unattended, but editing boot entries (init=/bin/bash)
 #      and recovery mode need the password. Recovery entries are removed from the menu. An apt hook puts
 #      --unrestricted back if a grub package update replaces /etc/grub.d/10_linux.
-#   3) Idle interactive shells (SSH and console) are closed after --idle-timeout seconds (TMOUT, read-only).
+#   3) Idle sessions end after --idle-timeout seconds: interactive shells via TMOUT (read-only, also in nested
+#      shells and `sudo -s` through /etc/bash.bashrc), and with systemd >= 252 logind stops a terminal session whose
+#      tty saw no input for that long — also when a program (vim, less, top) is open. Sessions without a tty (how
+#      Server Control runs commands) are never stopped by this. sshd's own limits are set by setup-host-ssh.sh.
 #
 # Every input is checked before anything is changed. Run AFTER setup-host-ssh.sh has enrolled TOTP.
 #
@@ -16,7 +19,8 @@
 #
 # Paths and tools can be overridden with env vars (DGSC_PAM_LOGIN, DGSC_GRUB_D, DGSC_GRUB_DEFAULT_D,
 # DGSC_GRUB_CFG, DGSC_PROFILE_D, DGSC_STATE_DIR, DGSC_GUARD_BIN, DGSC_APT_CONF_D, DGSC_UPDATE_GRUB,
-# DGSC_GRUB_MKPASSWD, DGSC_USER_HOME, DGSC_SKIP_ROOT_CHECK) — used by scripts/smoke-test-console-hardening.sh.
+# DGSC_GRUB_MKPASSWD, DGSC_USER_HOME, DGSC_BASH_BASHRC, DGSC_LOGIND_CONF_D, DGSC_SYSTEMD_VERSION,
+# DGSC_SKIP_ROOT_CHECK) — used by scripts/smoke-test-console-hardening.sh.
 # Do not set them on a real host.
 set -euo pipefail
 
@@ -47,6 +51,10 @@ GRUB_LINUX_SCRIPT="$GRUB_D/10_linux"
 GRUB_LINUX_ORIG="$STATE_DIR/10_linux.orig"
 LEGACY_GRUB_LINUX_ORIG="$GRUB_D/10_linux.dgsc-orig"
 IDLE_FILE="$PROFILE_D/99-datagate-idle-timeout.sh"
+BASH_BASHRC="${DGSC_BASH_BASHRC:-/etc/bash.bashrc}"
+BASHRC_MARKER="# datagate: idle timeout"
+LOGIND_CONF_D="${DGSC_LOGIND_CONF_D:-/etc/systemd/logind.conf.d}"
+LOGIND_DROPIN="$LOGIND_CONF_D/99-datagate-idle.conf"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
@@ -300,6 +308,40 @@ esac
 EOF
   chmod 0644 "$IDLE_FILE"
   info "Idle shells close after ${IDLE_TIMEOUT}s ($IDLE_FILE)"
+
+  # /etc/profile.d is read by login shells only; nested shells (bash, sudo -s, su) read /etc/bash.bashrc.
+  if [[ -f "$BASH_BASHRC" ]] && ! grep -qF "$BASHRC_MARKER" "$BASH_BASHRC"; then
+    printf '\n%s\n[ -r %s ] && . %s\n' "$BASHRC_MARKER" "$IDLE_FILE" "$IDLE_FILE" >> "$BASH_BASHRC"
+    info "Nested interactive shells get the same TMOUT ($BASH_BASHRC)"
+  fi
+
+  apply_logind_idle
+}
+
+# logind StopIdleSessionSec (systemd >= 252): a tty session with no input for IDLE_TIMEOUT is stopped, whatever
+# runs in it. logind decides idleness from the tty, so sessions without one are never considered idle.
+apply_logind_idle() {
+  local version="${DGSC_SYSTEMD_VERSION:-}"
+  if [[ -z "$version" ]]; then
+    [[ -d /run/systemd/system ]] || { warn "systemd is not running — logind idle stop not configured (TMOUT only)"; return 0; }
+    version="$(systemctl --version 2>/dev/null | awk 'NR == 1 { print $2 }')"
+  fi
+  if ! [[ "$version" =~ ^[0-9]+$ ]] || (( version < 252 )); then
+    warn "systemd ${version:-unknown} has no StopIdleSessionSec (needs 252+) — idle programs on a tty are not stopped"
+    return 0
+  fi
+  mkdir -p "$LOGIND_CONF_D"
+  cat > "$LOGIND_DROPIN" <<EOF
+# DataGate: stop terminal sessions (SSH with a tty, console) after ${IDLE_TIMEOUT}s without input.
+[Login]
+StopIdleSessionSec=${IDLE_TIMEOUT}
+EOF
+  chmod 0644 "$LOGIND_DROPIN"
+  if [[ -z "${DGSC_SYSTEMD_VERSION:-}" ]]; then
+    # logind re-reads its config on SIGHUP; a restart would also work but is not needed.
+    systemctl kill -s HUP systemd-logind >/dev/null 2>&1 || warn "could not signal systemd-logind — reboot to apply $LOGIND_DROPIN"
+  fi
+  info "Idle terminal sessions are stopped after ${IDLE_TIMEOUT}s by systemd-logind ($LOGIND_DROPIN)"
 }
 
 if [[ "$NO_TOTP" -eq 1 ]]; then

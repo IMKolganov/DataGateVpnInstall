@@ -124,7 +124,10 @@ if has "$totp_body" 'AuthenticationMethods publickey,keyboard-interactive' \
   && has "$key_body" 'AuthenticationMethods publickey' \
   && has "$key_body" 'KbdInteractiveAuthentication no' \
   && has "$key_body" 'PermitRootLogin no' && has "$key_body" 'PasswordAuthentication no' \
-  && has "$totp_body" 'X11Forwarding no' && has "$key_body" 'X11Forwarding no'; then
+  && has "$totp_body" 'X11Forwarding no' && has "$key_body" 'X11Forwarding no' \
+  && has "$totp_body" 'ClientAliveInterval 60' \
+  && has "$totp_body" 'ChannelTimeout session=600s session:shell=600s session:subsystem:sftp=600s direct-tcpip=600s forwarded-tcpip=600s' \
+  && has "$key_body" 'UnusedConnectionTimeout 600s'; then
   pass "drop-in: totp → key+TOTP, key → key-only; both: no root, no password, no X11"
 else
   fail "drop-in modes wrong: totp=[$totp_body] key=[$key_body]"

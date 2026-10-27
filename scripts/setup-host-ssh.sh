@@ -16,6 +16,9 @@
 #   sudo ./scripts/setup-host-ssh.sh --user YOURNAME --skip-password
 #   sudo ./scripts/setup-host-ssh.sh --user YOURNAME --skip-totp      # no SSH 2FA: key-only sshd (still hardened)
 #   sudo ./scripts/setup-host-ssh.sh --user YOURNAME --skip-sshd      # user/keys/TOTP only, sshd untouched
+#   --idle-timeout SECONDS (default 600): sshd closes interactive shells / sftp / port forwards with no traffic for
+#     that long (ChannelTimeout) and connections with no channels (UnusedConnectionTimeout); commands without a
+#     tty (how Server Control runs installs) are not limited. Dead connections drop after ~3 min (ClientAlive).
 #   sudo ./scripts/setup-host-ssh.sh --user YOURNAME --password-file /path --totp-secret-file /path --totp-out /path
 #
 # Keys already in /home/USER/.ssh/authorized_keys → omit --pubkey (same-file copy is a no-op).
@@ -37,13 +40,14 @@ SKIP_SSHD=0
 PASSWORD_FILE=""
 TOTP_SECRET_FILE=""
 TOTP_OUT=""
+IDLE_TIMEOUT=600
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
 warn() { echo "WARN: $*" >&2; }
 
 usage() {
-  sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 }
 
@@ -62,6 +66,7 @@ while [[ $# -gt 0 ]]; do
     --password-file) need_value "$1" "${2:-}"; PASSWORD_FILE="$2"; shift 2 ;;
     --totp-secret-file) need_value "$1" "${2:-}"; TOTP_SECRET_FILE="$2"; shift 2 ;;
     --totp-out) need_value "$1" "${2:-}"; TOTP_OUT="$2"; shift 2 ;;
+    --idle-timeout) need_value "$1" "${2:-}"; IDLE_TIMEOUT="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) die "unknown arg: $1 (try --help)" ;;
   esac
@@ -264,6 +269,29 @@ ChallengeResponseAuthentication no
 AuthenticationMethods publickey
 EOF
   fi
+  cat <<'EOF'
+ClientAliveInterval 60
+ClientAliveCountMax 3
+EOF
+  # Idle limits (OpenSSH >= 9.2). session:command is left out on purpose: installs run as commands without a tty
+  # and can be silent for longer than the limit. Plain "session" is needed too: a shell opened through a client's
+  # ControlMaster connection keeps that type (seen on OpenSSH 9.6), and only session:shell would never expire it.
+  if [[ "${SSHD_IDLE_SUPPORTED:-1}" == "1" ]]; then
+    local t="${IDLE_TIMEOUT:-600}s"
+    echo "ChannelTimeout session=$t session:shell=$t session:subsystem:sftp=$t direct-tcpip=$t forwarded-tcpip=$t"
+    echo "UnusedConnectionTimeout $t"
+  fi
+}
+
+# OpenSSH < 9.2 does not know ChannelTimeout / UnusedConnectionTimeout; writing them would fail sshd -t.
+detect_sshd_idle_support() {
+  SSHD_IDLE_SUPPORTED=0
+  if command -v sshd >/dev/null 2>&1 \
+    && sshd -t -o "ChannelTimeout=session:shell=600s" -o "UnusedConnectionTimeout=600s" >/dev/null 2>&1; then
+    SSHD_IDLE_SUPPORTED=1
+  else
+    warn "this sshd has no ChannelTimeout/UnusedConnectionTimeout (OpenSSH < 9.2) — only TMOUT limits idle shells"
+  fi
 }
 
 reload_sshd() {
@@ -301,6 +329,7 @@ apply_sshd() {
   # OpenSSH: first value wins; Include sshd_config.d runs before main-file keywords.
   # Write 00-datagate so we beat cloud-init (50-cloud-init.conf) on Ubuntu images.
   mkdir -p "$(dirname "$SSHD_DROPIN")"
+  detect_sshd_idle_support
   sshd_dropin_body "$mode" > "$SSHD_DROPIN"
   chmod 0644 "$SSHD_DROPIN"
   info "Wrote $SSHD_DROPIN (overrides cloud-init; mode: $mode)"
@@ -359,6 +388,7 @@ EOF
 # Check every input file before the first change (user, keys, sshd), so a bad argument never leaves a
 # half-configured host.
 preflight() {
+  [[ "$IDLE_TIMEOUT" =~ ^[0-9]+$ && "$IDLE_TIMEOUT" -ge 60 ]] || die "--idle-timeout must be seconds >= 60"
   if [[ -n "$ADMIN_USER" ]]; then
     [[ "$ADMIN_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid username: $ADMIN_USER"
     [[ "$ADMIN_USER" != "root" ]] || die "do not use root — create a normal admin user"

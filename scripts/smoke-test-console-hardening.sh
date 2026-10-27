@@ -39,6 +39,7 @@ EOF
   chmod 0755 "$TMP/grub.d/10_linux"
   printf 'JBSWY3DPEHPK3PXP\n" TOTP_AUTH\n' > "$TMP/home/dgadmin/.google_authenticator"
   printf 'correct-horse-battery-staple\n' > "$TMP/grub.pass"
+  printf '# System-wide .bashrc file for interactive bash(1) shells.\n' > "$TMP/bash.bashrc"
 
   # Fake update-grub that behaves like grub-mkconfig: runs every executable NN_* generator in grub.d
   # (skipping README / *~ / *.dpkg-*); any 10_linux* file emits one Linux entry built from its own CLASS line.
@@ -86,6 +87,9 @@ run_script() {
   DGSC_STATE_DIR="$TMP/state" \
   DGSC_GUARD_BIN="$TMP/sbin/datagate-grub-guard" \
   DGSC_APT_CONF_D="$TMP/apt.conf.d" \
+  DGSC_BASH_BASHRC="$TMP/bash.bashrc" \
+  DGSC_LOGIND_CONF_D="$TMP/logind.conf.d" \
+  DGSC_SYSTEMD_VERSION="${TEST_SYSTEMD_VERSION-255}" \
   DGSC_FAKE_TMP="$TMP" \
   DGSC_UPDATE_GRUB="$TMP/bin/update-grub" \
   DGSC_GRUB_MKPASSWD="$MKPASSWD" \
@@ -131,13 +135,26 @@ if sh -i -c ". '$idle'; [ \"\$TMOUT\" = 600 ]" 2>/dev/null </dev/null; then pass
 if [[ "$(bash -c "source '$idle'; echo [\$TMOUT]")" == "[]" ]]; then pass "non-interactive shells (bash -lc, scripts) get no TMOUT"; else fail "TMOUT set in a non-interactive shell"; fi
 if [[ "$(bash --norc -i -c "source '$idle'; bash -c 'echo [\$TMOUT]'" 2>/dev/null)" == "[]" ]]; then pass "TMOUT is not exported to child scripts (read builtin unaffected)"; else fail "TMOUT leaks into child processes"; fi
 
+bashrc="$TMP/bash.bashrc"
+if grep -q "\. $idle" "$bashrc" && [[ "$(bash --norc -i -c "source '$bashrc'; echo \$TMOUT" 2>/dev/null)" == "600" ]]; then
+  pass "nested shells (bash, sudo -s) get TMOUT via bash.bashrc"
+else
+  fail "bash.bashrc hook missing: $(cat "$bashrc")"
+fi
+if grep -qx 'StopIdleSessionSec=600' "$TMP/logind.conf.d/99-datagate-idle.conf" && grep -qx '\[Login\]' "$TMP/logind.conf.d/99-datagate-idle.conf"; then
+  pass "systemd 255: logind stops idle tty sessions (StopIdleSessionSec=600)"
+else
+  fail "logind drop-in missing"
+fi
+
 echo "=== scenario: re-run is idempotent ==="
 cp "$TMP/pam.d/login" "$TMP/login.first"
 printf 'correct-horse-battery-staple\n' > "$TMP/grub.pass"
 if run_script --user dgadmin --grub-password-file "$TMP/grub.pass" >"$TMP/out.log" 2>&1 \
   && diff -q "$TMP/login.first" "$TMP/pam.d/login" >/dev/null \
-  && [[ "$(grep -c -- '--unrestricted' "$TMP/grub.d/10_linux")" -eq 1 ]]; then
-  pass "second run changes nothing in PAM and does not double --unrestricted"
+  && [[ "$(grep -c -- '--unrestricted' "$TMP/grub.d/10_linux")" -eq 1 ]] \
+  && [[ "$(grep -c 'datagate: idle timeout' "$TMP/bash.bashrc")" -eq 1 ]]; then
+  pass "second run changes nothing in PAM / bash.bashrc and does not double --unrestricted"
 else
   fail "second run not idempotent: $(cat "$TMP/out.log")"
 fi
@@ -224,6 +241,15 @@ if run_script --user dgadmin --skip-grub >/dev/null 2>&1 && [[ "$(grep -c pam_go
   pass "switch back to 2FA adds exactly one TOTP line"
 else
   fail "switch back to 2FA"
+fi
+
+echo "=== scenario: old systemd (no StopIdleSessionSec) → TMOUT only, clear warning ==="
+make_sandbox
+if TEST_SYSTEMD_VERSION=249 run_script --user dgadmin --skip-grub >"$TMP/out.log" 2>&1 \
+  && [[ ! -e "$TMP/logind.conf.d/99-datagate-idle.conf" ]] && grep -q 'needs 252' "$TMP/out.log"; then
+  pass "systemd 249: no logind drop-in, warning printed, script succeeds"
+else
+  fail "old systemd: $(cat "$TMP/out.log")"
 fi
 
 echo "=== scenario: bad input is rejected before anything changes ==="

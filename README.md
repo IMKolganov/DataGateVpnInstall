@@ -102,8 +102,18 @@ files if `sshd -t` rejects the new ones, and re-runs do not need apt mirrors whe
 - GRUB superuser `dgsc-grub`: the host still boots unattended, but editing boot entries and recovery mode need
   the password (Server Control shows it under **SSH access**). Recovery entries are removed. If the generated
   `grub.cfg` would ask for a password at boot, the script rolls back.
-- Idle interactive shells (SSH and console) close after 10 minutes (`TMOUT=600`, read-only, not exported).
-  Running commands, non-interactive SSH commands and scripts started from the shell are not affected.
+- Idle sessions end after 10 minutes (`--idle-timeout`, default 600 s), whatever is open in them:
+  | What sits idle | What ends it |
+  |---|---|
+  | bash at the prompt, also nested `bash` / `sudo -s` | `TMOUT` (read-only; `/etc/profile.d` + `/etc/bash.bashrc`) |
+  | a program (`vim`, `less`, `top`) over SSH | sshd `ChannelTimeout` (no traffic on the channel) |
+  | a program on the console | systemd-logind `StopIdleSessionSec` (no input on the tty; systemd 252+) |
+  | sftp, port forwards, `ssh -N`, unused ControlMaster connections | sshd `ChannelTimeout` / `UnusedConnectionTimeout` (OpenSSH 9.2+) |
+  | a dropped network connection | sshd `ClientAliveInterval 60` × 3 |
+
+  Not limited on purpose: an active session, and commands run without a tty (Server Control's installs and jobs can
+  be silent for longer than 10 minutes). `TMOUT` is not exported, so scripts started from a shell keep a normal
+  `read`.
 - An apt `DPkg::Post-Invoke` hook (`/usr/local/sbin/datagate-grub-guard`) puts `--unrestricted` back if a grub
   package update replaces `/etc/grub.d/10_linux`; if it cannot, it removes the GRUB password so the host still boots.
 - `X11Forwarding no`.

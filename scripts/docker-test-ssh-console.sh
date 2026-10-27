@@ -48,6 +48,9 @@ out="$(bash "$SSH" --user dgadmin --pubkey "$W/key.pub" --password-file "$W/pass
 [[ "$(eff permitrootlogin)" == "no" && "$(eff passwordauthentication)" == "no" && "$(eff x11forwarding)" == "no" ]] \
   && pass "sshd: no root, no password, no X11" || fail "sshd root=$(eff permitrootlogin) pw=$(eff passwordauthentication) x11=$(eff x11forwarding)"
 [[ "$(cat "$W/totp.out")" == "$SECRET" ]] && pass "--totp-out reports the enrolled secret" || fail "totp-out mismatch"
+[[ "$(eff channeltimeout)" == *"session=600"* && "$(eff channeltimeout)" == *"session:shell=600"* && "$(eff channeltimeout)" != *"session:command"* && "$(eff unusedconnectiontimeout)" == "600" && "$(eff clientaliveinterval)" == "60" ]] \
+  && pass "sshd: idle shells / sftp / forwards and unused connections limited to 600s, dead peers dropped" \
+  || fail "sshd idle limits: channeltimeout=[$(eff channeltimeout)] unused=[$(eff unusedconnectiontimeout)] alive=[$(eff clientaliveinterval)]"
 [[ "$(stat -c '%U %a' /home/dgadmin/.google_authenticator)" == "dgadmin 400" ]] && pass "TOTP file owned by dgadmin, 0400" || fail "TOTP file perms"
 
 echo "=== 2) console with 2FA ==="
