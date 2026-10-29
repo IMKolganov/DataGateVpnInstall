@@ -5,6 +5,8 @@
 #   # or: INSTALL_HOME=/home/user ./scripts/post-install-check.sh
 #
 set -euo pipefail
+# Checks that pipe long output (ip route, ufw status, ss) use grep without -q: -q exits on the first match, the
+# writer gets SIGPIPE and pipefail turns a found line into a false FAIL.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -171,7 +173,7 @@ for port in "$TCP_API_PORT" "$UDP_API_PORT"; do
 done
 
 # DCO kernel module
-if lsmod 2>/dev/null | awk '{print $1}' | grep -qE '^ovpn'; then
+if lsmod 2>/dev/null | awk '{print $1}' | grep -E '^ovpn' >/dev/null; then
   pass "kernel ovpn/dco module loaded"
 else
   warn "no ovpn module in lsmod — DCO may be userspace-only"
@@ -209,7 +211,7 @@ if is_true "${INSTALL_XRAY:-false}"; then
     fail "XRAY_DNS_IDENTITY_IFACE must be eth0 (got: ${iface:-empty})"
   fi
 
-  if ip route | grep -q "${XRAY_DNS_IDENTITY_SUBNET%/*}"; then
+  if ip route | grep -F "${XRAY_DNS_IDENTITY_SUBNET%/*}" >/dev/null; then
     pass "host route for identity subnet"
   else
     fail "missing host route for $XRAY_DNS_IDENTITY_SUBNET — systemctl start datagate-xray-dns-route"
@@ -228,12 +230,12 @@ if is_true "${INSTALL_XRAY:-false}"; then
   fi
 
   if command -v ufw >/dev/null 2>&1; then
-    if ufw status 2>/dev/null | grep -q "$PIHOLE_DNS_IP.*53"; then
+    if ufw status 2>/dev/null | grep "$PIHOLE_DNS_IP.*53" >/dev/null; then
       pass "UFW mentions Pi-hole :53"
     else
       warn "UFW status did not show $PIHOLE_DNS_IP:53 — verify identity DNS rules"
     fi
-    if ufw status 2>/dev/null | grep -q "${XRAY_DNS_IDENTITY_SUBNET}"; then
+    if ufw status 2>/dev/null | grep -F "${XRAY_DNS_IDENTITY_SUBNET}" >/dev/null; then
       pass "UFW mentions identity subnet $XRAY_DNS_IDENTITY_SUBNET"
     else
       fail "UFW missing identity subnet $XRAY_DNS_IDENTITY_SUBNET (DNS from sendThrough)"
@@ -280,7 +282,7 @@ if is_true "${INSTALL_XRAY:-false}"; then
         fi
 
         if command -v ss >/dev/null 2>&1; then
-          if ss -lnt 2>/dev/null | grep -qE "[:.]${xhttp_port}[[:space:]]"; then
+          if ss -lnt 2>/dev/null | grep -E "[:.]${xhttp_port}[[:space:]]" >/dev/null; then
             pass "xHTTP port :$xhttp_port is listening"
           else
             fail "nothing listening on :$xhttp_port — check compose port publish and the inbound"

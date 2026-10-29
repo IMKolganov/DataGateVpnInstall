@@ -70,6 +70,8 @@ done
 [[ -n "$WAZUH_MANAGER" && -n "$AGENT_NAME" && -n "$PROMETHEUS_IP" ]] || die "wazuh manager, agent name, and prometheus IP are required"
 [[ "$AGENT_NAME" =~ ^[a-z0-9][a-z0-9._-]{0,62}$ ]] || die "invalid agent name: $AGENT_NAME"
 [[ "$(id -u)" -eq 0 ]] || die "run as root"
+# unattended-upgrades often holds the dpkg lock on a fresh VM: make every apt-get wait for it instead of failing.
+echo 'DPkg::Lock::Timeout "900";' > /etc/apt/apt.conf.d/90dgsc-lock-wait
 [[ -x "$SCRIPT_DIR/setup-host-ssh.sh" || -f "$SCRIPT_DIR/setup-host-ssh.sh" ]] || die "missing setup-host-ssh.sh"
 [[ -f "$SCRIPT_DIR/setup-host-console.sh" ]] || die "missing setup-host-console.sh"
 

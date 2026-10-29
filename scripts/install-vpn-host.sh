@@ -1183,6 +1183,8 @@ run_post_install_check() {
 main() {
   if [[ "$RENDER_ONLY" -eq 0 ]]; then
     [[ "$(id -u)" -eq 0 ]] || die "run as root: sudo $0 ..."
+    # unattended-upgrades often holds the dpkg lock on a fresh VM: make every apt-get wait for it instead of failing.
+    echo 'DPkg::Lock::Timeout "900";' > /etc/apt/apt.conf.d/90dgsc-lock-wait
   fi
 
   if [[ "$WIZARD" -eq 1 ]] || [[ ! -f "$ENV_FILE" ]]; then
