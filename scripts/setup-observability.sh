@@ -151,7 +151,8 @@ install_wazuh_agent() {
     chmod 644 /usr/share/keyrings/wazuh.gpg
     echo "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main" > /etc/apt/sources.list.d/wazuh.list
     apt-get update -qq
-    ver="$(apt-cache madison wazuh-agent | awk -v want="$WAZUH_VERSION" 'index($0, want) {print $3; exit}')"
+    # Read all of madison's output: an early awk exit gives apt-cache SIGPIPE, and with pipefail the script dies with 141.
+    ver="$(apt-cache madison wazuh-agent | awk -v want="$WAZUH_VERSION" '!ver && index($0, want) {ver = $3} END {print ver}')"
     [[ -n "$ver" ]] || die "wazuh-agent ${WAZUH_VERSION} not found in the 4.x apt repo (pin must match the manager)"
     if [[ -n "$wazuh_pass" ]]; then
       WAZUH_MANAGER="$WAZUH_MANAGER" WAZUH_AGENT_NAME="$AGENT_NAME" WAZUH_REGISTRATION_PASSWORD="$wazuh_pass" \
