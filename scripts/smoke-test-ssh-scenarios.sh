@@ -108,10 +108,47 @@ else
   fail "setup-host-ssh.sh missing same-file guard"
 fi
 
-if grep -q 'forcing --skip-sshd' "$SSH_SCRIPT" && grep -q '00-datagate-hardening.conf' "$SSH_SCRIPT"; then
-  pass "skip-totp auto-skip-sshd + cloud-init drop-in"
+if grep -q '00-datagate-hardening.conf' "$SSH_SCRIPT"; then
+  pass "cloud-init override drop-in"
 else
-  fail "missing skip-totp / cloud-init hardening"
+  fail "missing cloud-init override drop-in"
+fi
+
+# --skip-totp (host without 2FA) still hardens sshd, key-only; the drop-in body is generated per mode.
+# (capture first: `producer | grep -q` can SIGPIPE the producer, which pipefail turns into a failure)
+body() { bash -c "source <(sed -n '/^sshd_dropin_body() {/,/^}/p' '$SSH_SCRIPT'); sshd_dropin_body $1"; }
+totp_body="$(body totp)"
+key_body="$(body key)"
+has() { grep -qx "$2" <<<"$1"; }
+if has "$totp_body" 'AuthenticationMethods publickey,keyboard-interactive' \
+  && has "$key_body" 'AuthenticationMethods publickey' \
+  && has "$key_body" 'KbdInteractiveAuthentication no' \
+  && has "$key_body" 'PermitRootLogin no' && has "$key_body" 'PasswordAuthentication no' \
+  && has "$totp_body" 'X11Forwarding no' && has "$key_body" 'X11Forwarding no' \
+  && has "$totp_body" 'ClientAliveInterval 60' \
+  && has "$totp_body" 'ChannelTimeout session=600s session:shell=600s session:subsystem:sftp=600s direct-tcpip=600s forwarded-tcpip=600s' \
+  && has "$key_body" 'UnusedConnectionTimeout 600s'; then
+  pass "drop-in: totp → key+TOTP, key → key-only; both: no root, no password, no X11"
+else
+  fail "drop-in modes wrong: totp=[$totp_body] key=[$key_body]"
+fi
+
+# A rejected config is rolled back (restore_backups before die) and apt is skipped when packages are present.
+if grep -q 'restore_backups' "$SSH_SCRIPT" && awk '/! sshd -t; then/ {f=1} f && /restore_backups/ {print "ok"; exit}' "$SSH_SCRIPT" | grep -q ok; then
+  pass "sshd -t failure restores the previous config"
+else
+  fail "sshd -t failure leaves the new config on disk"
+fi
+if grep -q 'dpkg -s openssh-server libpam-google-authenticator' "$SSH_SCRIPT"; then
+  pass "re-runs do not need apt mirrors"
+else
+  fail "re-runs always hit apt-get update"
+fi
+novalue_out="$(bash "$SSH_SCRIPT" --user 2>&1 || true)"
+if grep -q -- '--user needs a value' <<<"$novalue_out"; then
+  pass "option without value: clear error"
+else
+  fail "option without value: unclear error"
 fi
 
 # Prefer target user's authorized_keys before /root (root sudo must not wipe user keys)
