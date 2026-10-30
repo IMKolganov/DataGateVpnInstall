@@ -249,7 +249,7 @@ After host checks pass:
 1. Register UDP / TCP / Xray ApiUrls
 2. New servers get seeded export templates with AES-128-GCM (deploy backend/frontend first)
 3. Xray: JSON template with `dnsServers: ["10.51.x.1"]`
-4. Pi-hole: `http://10.51.x.1:8080`, prefix `10.80.x.`
+4. Pi-hole settings are announced automatically; approve the discovered server to save them and start its collector.
 5. Issue client links
 
 Client: Private DNS Off.
@@ -289,9 +289,14 @@ Managers self-announce with HTTPS domain ApiUrls (installer sets `PUBLIC_API_URL
 | OpenVPN UDP | `https://UDP_WSS_DOMAIN/` — type **OpenVPN** |
 | OpenVPN TCP | `https://TCP_WSS_DOMAIN/` — type **OpenVPN** |
 | Xray | `https://XRAY_DOMAIN:9443/` — type **Xray** (not OpenVPN; wrong type → JWT audience mismatch → **401**) |
-| Xray Pi-hole Base URL | `http://{PIHOLE_DNS_IP}:8080` (e.g. `http://10.51.48.1:8080`) |
-| Xray Pi-hole app password | same as `PIHOLE_WEBPASSWORD` |
-| Xray Pi-hole client subnet | identity prefix, e.g. `10.80.3.` |
+
+OpenVPN TCP/UDP and Xray announce `hasPiHole` plus the Pi-hole URL, password and collector settings to the HTTPS backend. Approving a discovery enables Pi-hole by default, imports its settings and applies them to the node in post-create setup. The review page lets you turn integration off before approval. Passwords are never returned in discovery responses.
+
+The installer passes `PIHOLE_BOOTSTRAP_*` defaults to each manager. TCP and UDP use their own VPN subnet prefixes; Xray uses its identity prefix. Persisted dashboard settings take precedence over these defaults. Explicit legacy `PIHOLE_*` overrides still take precedence for compatibility.
+
+Deploy SharedModels **1.0.86**, the backend with migration `VpnServerDiscovery_PiHoleBootstrap`, frontend and updated manager images before using these templates. For a pending discovery on an existing installation, re-render the stacks and recreate the managers so they announce credentials before you approve. Already registered servers keep their existing settings; anonymous re-announcements never replace trusted credentials.
+
+When registering manually, use the announced ApiUrl and enable Pi-hole integration; post-create setup imports the matching pending discovery's credentials. Complete manually entered Pi-hole settings are preserved.
 
 Existing hosts installed before this fix still announce `http://PUBLIC_IP:5010|5011/` until you re-render and recreate managers:
 
