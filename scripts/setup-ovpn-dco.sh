@@ -41,8 +41,10 @@ if command -v apt-get >/dev/null 2>&1; then
   kver="$(uname -r)"
   info "trying linux-modules-extra-${kver}"
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq || true
-  if apt-get install -y -qq "linux-modules-extra-${kver}" 2>/dev/null; then
+  # Not quiet: this can take minutes, and apt's "Waiting for cache lock" and any error belong in the install log.
+  # Short lock wait: a fresh VM's unattended-upgrades can hold it for many minutes, and DCO is optional.
+  apt-get update -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=120 || true
+  if apt-get install -y -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=120 "linux-modules-extra-${kver}" 2>&1; then
     for m in "${CANDIDATES[@]}"; do
       if try_modprobe "$m"; then
         info "DCO module ready after modules-extra ($m)"
@@ -50,7 +52,7 @@ if command -v apt-get >/dev/null 2>&1; then
       fi
     done
   else
-    warn "linux-modules-extra-${kver} not available (normal on kernels with in-tree ovpn)"
+    warn "linux-modules-extra-${kver} not installed: apt is busy or the package does not exist (normal on kernels with in-tree ovpn)"
   fi
 fi
 

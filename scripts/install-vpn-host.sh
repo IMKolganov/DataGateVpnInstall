@@ -703,6 +703,7 @@ write_full_nginx() {
 # Xray manager API — separate port, does not collide with VLESS on :443
 server {
     listen ${XRAY_API_HTTPS_PORT:-9443} ssl;
+    http2 on;
     server_name ${XRAY_DOMAIN};
 
     ssl_certificate /etc/letsencrypt/live/${XRAY_DOMAIN}/fullchain.pem;
