@@ -1,0 +1,22 @@
+name: datagate-monitor-telegrambot
+services:
+  telegrambot:
+    image: __BOT_IMAGE__
+    container_name: datagate-monitor-telegrambot
+    restart: unless-stopped
+    env_file:
+      - path: ./telegrambot.env
+        format: raw
+    volumes:
+      - ./resources:/app/resources
+      - ./data-protection:/root/.aspnet/DataProtection-Keys
+    networks: [web]
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+networks:
+  web:
+    external: true
+    name: datagate_dashboard

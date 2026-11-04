@@ -6,6 +6,8 @@
 #   2) cp site.env.example site.env && nano site.env
 #   3) sudo ./scripts/install-vpn-host.sh
 #
+# Stacks: INSTALL_OPENVPN_UDP / INSTALL_OPENVPN_TCP / INSTALL_XRAY in site.env (at least one true).
+#
 # Flags:
 #   --env FILE       path to site.env (default: ../site.env next to scripts/)
 #   --wizard         ask for values interactively (writes site.env)
@@ -46,6 +48,19 @@ is_ipv4() {
   [[ "${1:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
 }
 
+# Which VPN stacks this host runs (INSTALL_OPENVPN_UDP / INSTALL_OPENVPN_TCP / INSTALL_XRAY in site.env).
+want_udp() { is_true "${INSTALL_OPENVPN_UDP:-true}"; }
+want_tcp() { is_true "${INSTALL_OPENVPN_TCP:-true}"; }
+want_xray() { is_true "${INSTALL_XRAY:-false}"; }
+want_openvpn() { want_udp || want_tcp; }
+
+# Domains that get a Let's Encrypt cert and an nginx WSS server block.
+wss_domains() {
+  want_udp && echo "$UDP_WSS_DOMAIN"
+  want_tcp && echo "$TCP_WSS_DOMAIN"
+  return 0
+}
+
 # Prefer AES-128-GCM when CPU has AES-NI (almost all cloud VPS); ChaCha only without AES-NI.
 host_has_aes_ni() {
   grep -qw aes /proc/cpuinfo 2>/dev/null
@@ -62,7 +77,7 @@ resolve_openvpn_cipher_defaults() {
 }
 
 usage() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 }
 
@@ -133,9 +148,18 @@ run_wizard() {
   ask INSTALL_HOME "Install home (stacks go here)" "$default_home"
   ask CERTBOT_EMAIL "Let's Encrypt email" ""
   [[ -n "$CERTBOT_EMAIL" ]] || die "CERTBOT_EMAIL is required"
-  ask UDP_WSS_DOMAIN "UDP WSS domain" ""
-  ask TCP_WSS_DOMAIN "TCP WSS domain" ""
-  [[ -n "$UDP_WSS_DOMAIN" && -n "$TCP_WSS_DOMAIN" ]] || die "WSS domains are required"
+  ask INSTALL_OPENVPN_UDP "Install OpenVPN UDP? (true/false)" "true"
+  ask INSTALL_OPENVPN_TCP "Install OpenVPN TCP? (true/false)" "true"
+  UDP_WSS_DOMAIN=""
+  TCP_WSS_DOMAIN=""
+  if want_udp; then
+    ask UDP_WSS_DOMAIN "UDP WSS domain" ""
+    [[ -n "$UDP_WSS_DOMAIN" ]] || die "UDP WSS domain is required"
+  fi
+  if want_tcp; then
+    ask TCP_WSS_DOMAIN "TCP WSS domain" ""
+    [[ -n "$TCP_WSS_DOMAIN" ]] || die "TCP WSS domain is required"
+  fi
   ask HFS_DOMAIN "Optional HTTP helper domain (empty=skip)" ""
   ask BACKEND__BASEURL "Dashboard backend base URL" "https://api.datagateapp.com/"
   ask DASHBOARD_API_IP "Dashboard public IP (UFW allow API)" ""
@@ -153,6 +177,9 @@ run_wizard() {
   local install_xray="false"
   resolve_openvpn_cipher_defaults
   info "OpenVPN cipher default: $DEFAULT_OVPN_CIPHER (AES-NI=$(host_has_aes_ni && echo yes || echo no))"
+  if ! want_openvpn && ! is_true "$install_xray_ans"; then
+    die "pick at least one of OpenVPN UDP, OpenVPN TCP, Xray"
+  fi
   if is_true "$install_xray_ans"; then
     install_xray="true"
     ask XRAY_DOMAIN "Xray VLESS domain" ""
@@ -170,6 +197,8 @@ PUBLIC_IP=${PUBLIC_IP}
 WAN_IF=${WAN_IF}
 INSTALL_HOME=${INSTALL_HOME}
 CERTBOT_EMAIL=${CERTBOT_EMAIL}
+INSTALL_OPENVPN_UDP=${INSTALL_OPENVPN_UDP}
+INSTALL_OPENVPN_TCP=${INSTALL_OPENVPN_TCP}
 UDP_WSS_DOMAIN=${UDP_WSS_DOMAIN}
 TCP_WSS_DOMAIN=${TCP_WSS_DOMAIN}
 HFS_DOMAIN=${HFS_DOMAIN}
@@ -263,8 +292,13 @@ load_env() {
 
   : "${PUBLIC_IP:?PUBLIC_IP required}"
   : "${INSTALL_HOME:?INSTALL_HOME required}"
-  : "${UDP_WSS_DOMAIN:?UDP_WSS_DOMAIN required}"
-  : "${TCP_WSS_DOMAIN:?TCP_WSS_DOMAIN required}"
+  : "${INSTALL_OPENVPN_UDP:=true}"
+  : "${INSTALL_OPENVPN_TCP:=true}"
+  : "${INSTALL_XRAY:=false}"
+  : "${UDP_WSS_DOMAIN:=}"
+  : "${TCP_WSS_DOMAIN:=}"
+  want_openvpn || want_xray \
+    || die "nothing to install — set at least one of INSTALL_OPENVPN_UDP, INSTALL_OPENVPN_TCP, INSTALL_XRAY to true"
   : "${TCP_VPN_SUBNET:?TCP_VPN_SUBNET required}"
   : "${UDP_VPN_SUBNET:?UDP_VPN_SUBNET required}"
   : "${BACKEND__BASEURL:?BACKEND__BASEURL required}"
@@ -284,7 +318,7 @@ load_env() {
   : "${PIHOLE_WEB_PORT:=8080}"
   : "${TZ:=UTC}"
   : "${DOCKER_BRIDGE_CIDR:=172.17.0.0/16}"
-  : "${INSTALL_XRAY:=false}"
+  : "${DNS_DUMMY_DEV:=dg-dns}"
 
   resolve_openvpn_cipher_defaults
   : "${TCP_CIPHER:=$DEFAULT_OVPN_CIPHER}"
@@ -306,6 +340,16 @@ load_env() {
   UDP_DNS2="$tcp_dns"
   PIHOLE_DNS_IP="$tcp_dns"
 
+  # Pi-hole answers on TCP tun .1. Without the TCP stack the same address lives on a dummy interface, so
+  # UDP clients and Xray keep the DNS IP, UFW rules and Pi-hole history they would have with TCP.
+  if want_tcp; then
+    PIHOLE_PRIMARY_DEV="$TCP_TUN_DEV"
+  else
+    PIHOLE_PRIMARY_DEV="$DNS_DUMMY_DEV"
+  fi
+  PIHOLE_SECONDARY_DEV=""
+  want_udp && PIHOLE_SECONDARY_DEV="$UDP_TUN_DEV"
+
   if [[ -z "$WAN_IF" || "$WAN_IF" == YOUR_* ]]; then
     WAN_IF="$(detect_wan_if)"
     : "${WAN_IF:=eth0}"
@@ -314,8 +358,8 @@ load_env() {
 
   reject_placeholder PUBLIC_IP "$PUBLIC_IP"
   reject_placeholder INSTALL_HOME "$INSTALL_HOME"
-  reject_placeholder UDP_WSS_DOMAIN "$UDP_WSS_DOMAIN"
-  reject_placeholder TCP_WSS_DOMAIN "$TCP_WSS_DOMAIN"
+  want_udp && reject_placeholder UDP_WSS_DOMAIN "$UDP_WSS_DOMAIN"
+  want_tcp && reject_placeholder TCP_WSS_DOMAIN "$TCP_WSS_DOMAIN"
   reject_placeholder BACKEND__BASEURL "$BACKEND__BASEURL"
   reject_placeholder PIHOLE_WEBPASSWORD "$PIHOLE_WEBPASSWORD"
   reject_placeholder ADMIN_SSH_IP "$ADMIN_SSH_IP"
@@ -416,13 +460,13 @@ preflight() {
   [[ "$SKIP_PREFLIGHT" -eq 1 ]] && { warn "preflight skipped"; return 0; }
   info "Preflight checks"
 
-  if [[ ! -e /dev/net/tun ]]; then
+  if want_openvpn && [[ ! -e /dev/net/tun ]]; then
     die "/dev/net/tun missing — load tun module: sudo modprobe tun"
   fi
 
   if [[ "$RENDER_ONLY" -eq 0 ]] && is_true "${ISSUE_CERTS:-true}" && [[ "$SKIP_CERTS" -eq 0 ]]; then
     local d resolved
-    for d in "$UDP_WSS_DOMAIN" "$TCP_WSS_DOMAIN"; do
+    for d in $(wss_domains); do
       resolved="$(getent ahostsv4 "$d" 2>/dev/null | awk '{print $1; exit}' || true)"
       if [[ -z "$resolved" ]]; then
         warn "DNS for $d does not resolve yet — certbot will fail until A-record → $PUBLIC_IP"
@@ -456,7 +500,7 @@ render_file() {
     PROMETHEUS_IP NODE_EXPORTER_PORT DOCKER_BRIDGE_CIDR
     TCP_VPN_SUBNET UDP_VPN_SUBNET TCP_DNS1 TCP_DNS2 UDP_DNS1 UDP_DNS2 PIHOLE_DNS_IP
     TCP_PORT UDP_PORT TCP_API_PORT UDP_API_PORT TCP_MANAGEMENT_PORT UDP_MANAGEMENT_PORT
-    TCP_TUN_DEV UDP_TUN_DEV UDP_WAN_IF
+    TCP_TUN_DEV UDP_TUN_DEV UDP_WAN_IF DNS_DUMMY_DEV PIHOLE_PRIMARY_DEV PIHOLE_SECONDARY_DEV
     PIHOLE_WEBPASSWORD PIHOLE_WEB_PORT TZ
     ASPNETCORE_ENVIRONMENT TCP_DCO UDP_DCO TCP_CIPHER TCP_DATA_CIPHERS UDP_CIPHER UDP_DATA_CIPHERS
     TCP_VPN_NETMASK UDP_VPN_NETMASK
@@ -534,7 +578,7 @@ write_pihole_env() {
   cat >"$dest" <<EOF
 TZ=${TZ:-UTC}
 PIHOLE_WEBPASSWORD=${PIHOLE_WEBPASSWORD}
-PIHOLE_DNS_INTERFACE=${TCP_TUN_DEV},${UDP_TUN_DEV}
+PIHOLE_DNS_INTERFACE=${PIHOLE_PRIMARY_DEV}${PIHOLE_SECONDARY_DEV:+,${PIHOLE_SECONDARY_DEV}}
 PIHOLE_WEB_PORT=${PIHOLE_WEB_PORT:-8080}
 EOF
 }
@@ -548,6 +592,8 @@ write_host_env() {
     extra_tcp_port="${XRAY_XHTTP_PORT:-2053}"
   fi
   cat >"$dest" <<EOF
+OPENVPN_TCP=$(want_tcp && echo true || echo false)
+OPENVPN_UDP=$(want_udp && echo true || echo false)
 TCP_VPN_SUBNET=${TCP_VPN_SUBNET}
 UDP_VPN_SUBNET=${UDP_VPN_SUBNET}
 PIHOLE_DNS_IP=${PIHOLE_DNS_IP}
@@ -613,13 +659,15 @@ EOF
 
 write_acme_conf() {
   local conf_d="$1" mode="${2:-waiting}"
-  local names="${UDP_WSS_DOMAIN} ${TCP_WSS_DOMAIN}"
+  local names
+  names="$(wss_domains | xargs)"
   if is_true "${INSTALL_XRAY:-false}" && [[ -n "${XRAY_DOMAIN:-}" ]]; then
     names+=" ${XRAY_DOMAIN}"
   fi
   if [[ -n "${HFS_DOMAIN:-}" ]]; then
     names+=" ${HFS_DOMAIN}"
   fi
+  names="$(xargs <<<"$names")"
 
   local trailing
   if [[ "$mode" == "redirect" ]]; then
@@ -647,9 +695,14 @@ EOF
 
 tls_certs_ready() {
   local home="$1"
-  local cert_root="$home/nginx-docker/certbot/conf/live"
-  [[ -f "$cert_root/${UDP_WSS_DOMAIN}/fullchain.pem" ]] \
-    && [[ -f "$cert_root/${TCP_WSS_DOMAIN}/fullchain.pem" ]]
+  local cert_root="$home/nginx-docker/certbot/conf/live" d
+  for d in $(wss_domains); do
+    [[ -f "$cert_root/$d/fullchain.pem" ]] || return 1
+  done
+  if want_xray; then
+    [[ -f "$cert_root/${XRAY_DOMAIN}/fullchain.pem" ]] || return 1
+  fi
+  return 0
 }
 
 write_simple_stream_conf() {
@@ -698,8 +751,16 @@ write_full_nginx() {
   local allow_block
   allow_block="$(xray_api_allow_block)"
 
-  render_file "$TEMPLATES/nginx-docker/nginx/conf.d/udp-wss.conf" "$conf_d/udp-wss.conf"
-  render_file "$TEMPLATES/nginx-docker/nginx/conf.d/tcp-wss.conf" "$conf_d/tcp-wss.conf"
+  if want_udp; then
+    render_file "$TEMPLATES/nginx-docker/nginx/conf.d/udp-wss.conf" "$conf_d/udp-wss.conf"
+  else
+    rm -f "$conf_d/udp-wss.conf"
+  fi
+  if want_tcp; then
+    render_file "$TEMPLATES/nginx-docker/nginx/conf.d/tcp-wss.conf" "$conf_d/tcp-wss.conf"
+  else
+    rm -f "$conf_d/tcp-wss.conf"
+  fi
 
   if is_true "${INSTALL_XRAY:-false}"; then
     if [[ -z "$allow_block" ]]; then
@@ -709,6 +770,7 @@ write_full_nginx() {
 # Xray manager API — separate port, does not collide with VLESS on :443
 server {
     listen ${XRAY_API_HTTPS_PORT:-9443} ssl;
+    http2 on;
     server_name ${XRAY_DOMAIN};
 
     ssl_certificate /etc/letsencrypt/live/${XRAY_DOMAIN}/fullchain.pem;
@@ -754,6 +816,24 @@ sync_xray_dns_route_assets() {
   cp "$SCRIPT_DIR/setup-xray-dns-identity-route.sh" "$home/host/setup-xray-dns-identity-route.sh"
   chmod +x "$home/host/setup-xray-dns-identity-route.sh"
   render_file "$TEMPLATES/host/datagate-xray-dns-route.service" "$home/host/datagate-xray-dns-route.service"
+}
+
+# Without the TCP stack Pi-hole binds PIHOLE_DNS_IP on a dummy interface created before docker starts.
+sync_dns_dummy_assets() {
+  local home="$INSTALL_HOME"
+  mkdir -p "$home/host"
+  render_file "$TEMPLATES/host/datagate-dns-dummy.service" "$home/host/datagate-dns-dummy.service"
+}
+
+write_pihole_compose() {
+  local dest="$1"
+  if want_tcp; then
+    cp "$TEMPLATES/pi-hole/docker-compose.yml" "$dest"
+  else
+    sed 's|^    network_mode: "container:openvpn-tcp-wss"$|    network_mode: host|' \
+      "$TEMPLATES/pi-hole/docker-compose.yml" >"$dest"
+    grep -q '^    network_mode: host$' "$dest" || die "pi-hole compose template: network_mode line not found"
+  fi
 }
 
 # Pi-hole joins openvpn-tcp-wss netns by container id — recreate after TCP reboot/recreate.
@@ -870,8 +950,6 @@ render_stacks() {
   info "Rendering stacks under $home"
 
   mkdir -p \
-    "$home/openvpn-tcp-wss/data" \
-    "$home/openvpn-udp-wss/data" \
     "$home/pi-hole/etc-pihole" \
     "$home/pi-hole/etc-dnsmasq.d" \
     "$home/nginx-docker/nginx/conf.d" \
@@ -881,13 +959,19 @@ render_stacks() {
     "$home/nginx-docker/certbot/conf" \
     "$home/host"
 
-  cp "$TEMPLATES/openvpn-tcp-wss/docker-compose.yml" "$home/openvpn-tcp-wss/docker-compose.yml"
-  write_openvpn_tcp_env "$home/openvpn-tcp-wss/.env"
+  if want_tcp; then
+    mkdir -p "$home/openvpn-tcp-wss/data"
+    cp "$TEMPLATES/openvpn-tcp-wss/docker-compose.yml" "$home/openvpn-tcp-wss/docker-compose.yml"
+    write_openvpn_tcp_env "$home/openvpn-tcp-wss/.env"
+  fi
 
-  cp "$TEMPLATES/openvpn-udp-wss/docker-compose.yml" "$home/openvpn-udp-wss/docker-compose.yml"
-  write_openvpn_udp_env "$home/openvpn-udp-wss/.env"
+  if want_udp; then
+    mkdir -p "$home/openvpn-udp-wss/data"
+    cp "$TEMPLATES/openvpn-udp-wss/docker-compose.yml" "$home/openvpn-udp-wss/docker-compose.yml"
+    write_openvpn_udp_env "$home/openvpn-udp-wss/.env"
+  fi
 
-  cp "$TEMPLATES/pi-hole/docker-compose.yml" "$home/pi-hole/docker-compose.yml"
+  write_pihole_compose "$home/pi-hole/docker-compose.yml"
   write_pihole_env "$home/pi-hole/.env"
   render_file "$TEMPLATES/pi-hole/wait-tun0-and-start.sh" "$home/pi-hole/wait-tun0-and-start.sh"
   chmod +x "$home/pi-hole/wait-tun0-and-start.sh"
@@ -901,7 +985,11 @@ render_stacks() {
   fi
 
   write_host_env "$home/host/.env"
-  sync_pihole_after_tcp_assets
+  if want_tcp; then
+    sync_pihole_after_tcp_assets
+  else
+    sync_dns_dummy_assets
+  fi
   cp "$ENV_FILE" "$home/site.env"
   cp "$ENV_FILE" "$home/site.env.installed"
 
@@ -914,8 +1002,10 @@ render_stacks() {
 
   if [[ -n "${SUDO_USER:-}" ]] && id "$SUDO_USER" >/dev/null 2>&1; then
     chown -R "$SUDO_USER:$SUDO_USER" \
-      "$home/openvpn-tcp-wss" "$home/openvpn-udp-wss" "$home/pi-hole" "$home/nginx-docker" "$home/host" \
+      "$home/pi-hole" "$home/nginx-docker" "$home/host" \
       "$home/site.env" "$home/site.env.installed" 2>/dev/null || true
+    want_tcp && chown -R "$SUDO_USER:$SUDO_USER" "$home/openvpn-tcp-wss" 2>/dev/null || true
+    want_udp && chown -R "$SUDO_USER:$SUDO_USER" "$home/openvpn-udp-wss" 2>/dev/null || true
     if is_true "${INSTALL_XRAY:-false}" && [[ -d "$home/datagate-monitor-xray" ]]; then
       chown -R "$SUDO_USER:$SUDO_USER" "$home/datagate-monitor-xray" 2>/dev/null || true
     fi
@@ -925,7 +1015,7 @@ render_stacks() {
   chmod 0777 "$home/nginx-docker/nginx/logs"
   chmod 0755 "$home/nginx-docker/certbot/www"
 
-  info "Rendered openvpn-tcp-wss / openvpn-udp-wss / pi-hole / nginx-docker / host$(is_true "${INSTALL_XRAY:-false}" && echo ' / xray')"
+  info "Rendered$(want_tcp && echo ' openvpn-tcp-wss /')$(want_udp && echo ' openvpn-udp-wss /') pi-hole / nginx-docker / host$(want_xray && echo ' / xray')"
 }
 
 ensure_docker() {
@@ -948,6 +1038,7 @@ setup_ufw() {
 }
 
 setup_ovpn_dco() {
+  want_openvpn || return 0
   if ! is_true "${TCP_DCO:-true}" && ! is_true "${UDP_DCO:-true}"; then
     info "DCO disabled for both stacks — skip host module"
     return 0
@@ -960,13 +1051,17 @@ wait_openvpn_up() {
   info "Waiting for OpenVPN containers (first boot can take a few minutes for PKI)..."
   local i=0
   while [[ $i -lt 150 ]]; do
-    local tcp_state udp_running
-    tcp_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' openvpn-tcp-wss 2>/dev/null || echo missing)"
-    udp_running="$(docker inspect --format '{{.State.Running}}' openvpn-udp-wss 2>/dev/null || echo false)"
-    if { [[ "$tcp_state" == "healthy" ]] || [[ "$tcp_state" == "running" ]]; } && [[ "$udp_running" == "true" ]]; then
+    local tcp_state="skipped" udp_running="skipped"
+    if want_tcp; then
+      tcp_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' openvpn-tcp-wss 2>/dev/null || echo missing)"
+    fi
+    if want_udp; then
+      udp_running="$(docker inspect --format '{{.State.Running}}' openvpn-udp-wss 2>/dev/null || echo false)"
+    fi
+    if [[ "$tcp_state" =~ ^(healthy|running|skipped)$ ]] && [[ "$udp_running" =~ ^(true|skipped)$ ]]; then
       # Prefer healthy; accept running after enough time if healthcheck not ready
-      if [[ "$tcp_state" == "healthy" ]] || [[ $i -gt 30 ]]; then
-        info "OpenVPN is up (tcp=$tcp_state udp=running)"
+      if [[ "$tcp_state" != "running" ]] || [[ $i -gt 30 ]]; then
+        info "OpenVPN is up (tcp=$tcp_state udp=$udp_running)"
         return 0
       fi
     fi
@@ -978,14 +1073,59 @@ wait_openvpn_up() {
 }
 
 start_openvpn() {
-  info "Starting OpenVPN (TCP then UDP — separate stacks)"
-  (cd "$INSTALL_HOME/openvpn-tcp-wss" && docker compose pull && docker compose up -d)
-  (cd "$INSTALL_HOME/openvpn-udp-wss" && docker compose pull && docker compose up -d)
+  want_openvpn || { info "OpenVPN not selected for this host — skip"; return 0; }
+  info "Starting OpenVPN ($(want_tcp && echo 'TCP ')$(want_udp && echo 'UDP ')— separate stacks)"
+  if want_tcp; then
+    (cd "$INSTALL_HOME/openvpn-tcp-wss" && docker compose pull && docker compose up -d)
+  fi
+  if want_udp; then
+    (cd "$INSTALL_HOME/openvpn-udp-wss" && docker compose pull && docker compose up -d)
+  fi
   wait_openvpn_up
 }
 
+# A reinstall with fewer protocols stops the stacks that are no longer selected. Their data dirs (PKI) stay.
+stop_unselected_stacks() {
+  local name dir
+  # Pi-hole sits in the TCP container's netns: release it (and stop the watcher that would re-join it) before
+  # TCP goes away. start_pihole recreates it in the host netns.
+  if ! want_tcp && docker inspect openvpn-tcp-wss >/dev/null 2>&1; then
+    systemctl disable --now datagate-pihole-after-tcp.service >/dev/null 2>&1 || true
+    docker rm -f datagate-pihole >/dev/null 2>&1 || true
+  fi
+  for name in openvpn-tcp-wss openvpn-udp-wss datagate-monitor-xray; do
+    case "$name" in
+      openvpn-tcp-wss) want_tcp && continue ;;
+      openvpn-udp-wss) want_udp && continue ;;
+      datagate-monitor-xray) want_xray && continue ;;
+    esac
+    dir="$INSTALL_HOME/$name"
+    if [[ -f "$dir/docker-compose.yml" ]]; then
+      info "Stopping $name (not selected for this host; data kept in $dir)"
+      (cd "$dir" && docker compose down) || warn "could not stop $name — docker compose down in $dir"
+    elif docker inspect "$name" >/dev/null 2>&1; then
+      info "Removing container $name (not selected for this host)"
+      docker rm -f "$name" >/dev/null || warn "could not remove container $name"
+    fi
+  done
+  if ! want_xray; then
+    systemctl disable --now datagate-xray-dns-route.service >/dev/null 2>&1 || true
+  fi
+  # TCP tun takes over PIHOLE_DNS_IP from the dummy interface of an earlier install without TCP.
+  if want_tcp; then
+    systemctl disable --now datagate-dns-dummy.service >/dev/null 2>&1 || true
+  fi
+}
+
 start_pihole() {
-  info "Starting Pi-hole (joins openvpn-tcp-wss netns; force-recreate so join uses current TCP id)"
+  if want_tcp; then
+    info "Starting Pi-hole (joins openvpn-tcp-wss netns; force-recreate so join uses current TCP id)"
+  else
+    # The after-tcp watcher would recreate Pi-hole into a TCP netns that no longer exists.
+    systemctl disable --now datagate-pihole-after-tcp.service >/dev/null 2>&1 || true
+    install_dns_dummy_service
+    info "Starting Pi-hole (host netns, DNS on ${DNS_DUMMY_DEV} ${PIHOLE_DNS_IP})"
+  fi
   (cd "$INSTALL_HOME/pi-hole" && docker compose up -d --force-recreate)
   local i st
   info "waiting for datagate-pihole healthy/running (up to 180s)"
@@ -999,9 +1139,24 @@ start_pihole() {
   done
   if ! docker inspect --format '{{.State.Running}}' datagate-pihole 2>/dev/null | grep -q true; then
     warn "Pi-hole not running — check: docker logs datagate-pihole"
-    warn "Fix: sudo systemctl restart datagate-pihole-after-tcp.service"
+    want_tcp && warn "Fix: sudo systemctl restart datagate-pihole-after-tcp.service"
   fi
-  install_pihole_after_tcp_service || warn "datagate-pihole-after-tcp.service not installed"
+  if want_tcp; then
+    install_pihole_after_tcp_service || warn "datagate-pihole-after-tcp.service not installed"
+  fi
+}
+
+install_dns_dummy_service() {
+  sync_dns_dummy_assets
+  local unit_src="$INSTALL_HOME/host/datagate-dns-dummy.service"
+  if grep -qE '__[A-Z0-9_]+__' "$unit_src"; then
+    die "unresolved placeholders in $unit_src"
+  fi
+  info "Enabling systemd unit datagate-dns-dummy (${DNS_DUMMY_DEV} ${PIHOLE_DNS_IP}/32 for Pi-hole)"
+  install -m 0644 "$unit_src" /etc/systemd/system/datagate-dns-dummy.service
+  systemctl daemon-reload
+  systemctl enable datagate-dns-dummy.service
+  systemctl restart datagate-dns-dummy.service || die "datagate-dns-dummy.service failed — systemctl status datagate-dns-dummy"
 }
 
 install_pihole_after_tcp_service() {
@@ -1053,7 +1208,8 @@ issue_certs() {
   info "Issuing Let's Encrypt certs (one cert per domain)"
   : "${CERTBOT_EMAIL:?CERTBOT_EMAIL required for ISSUE_CERTS}"
 
-  local domains=("$UDP_WSS_DOMAIN" "$TCP_WSS_DOMAIN")
+  local domains
+  mapfile -t domains < <(wss_domains)
   if [[ -n "${HFS_DOMAIN:-}" ]]; then
     domains+=("$HFS_DOMAIN")
   fi
@@ -1134,11 +1290,15 @@ print_summary() {
 ======== DONE ========
 Stacks under: $INSTALL_HOME
 
-  OpenVPN UDP WSS: https://${UDP_WSS_DOMAIN}/  (SNI → :8443 → host :${UDP_API_PORT})
-  OpenVPN TCP WSS: https://${TCP_WSS_DOMAIN}/  (SNI → :8443 → host :${TCP_API_PORT})
-  Pi-hole DNS:     ${PIHOLE_DNS_IP}:53 (VPN clients)
+$(want_udp && echo "  OpenVPN UDP WSS: https://${UDP_WSS_DOMAIN}/  (SNI → :8443 → host :${UDP_API_PORT})")
+$(want_tcp && echo "  OpenVPN TCP WSS: https://${TCP_WSS_DOMAIN}/  (SNI → :8443 → host :${TCP_API_PORT})")
+  Pi-hole DNS:     ${PIHOLE_DNS_IP}:53 (VPN clients, on ${PIHOLE_PRIMARY_DEV})
   Pi-hole admin:   http://${PIHOLE_DNS_IP}:${PIHOLE_WEB_PORT}/ (via VPN)
-  Pi-hole reboot:  systemd datagate-pihole-after-tcp.service (watcher: boot + TCP start events)
+$(if want_tcp; then
+  echo "  Pi-hole reboot:  systemd datagate-pihole-after-tcp.service (watcher: boot + TCP start events)"
+else
+  echo "  Pi-hole address: systemd datagate-dns-dummy.service (${DNS_DUMMY_DEV}, created before docker)"
+fi)
 EOF
   if is_true "${INSTALL_XRAY:-false}"; then
     cat <<EOF
@@ -1152,8 +1312,8 @@ EOF
   cat <<EOF
 
 Self-announce ApiUrl (written into each stack .env as PUBLIC_API_URL):
-  - UDP  OpenVPN  https://${UDP_WSS_DOMAIN}/
-  - TCP  OpenVPN  https://${TCP_WSS_DOMAIN}/
+$(want_udp && echo "  - UDP  OpenVPN  https://${UDP_WSS_DOMAIN}/")
+$(want_tcp && echo "  - TCP  OpenVPN  https://${TCP_WSS_DOMAIN}/")
 $(is_true "${INSTALL_XRAY:-false}" && echo "  - Xray          https://${XRAY_DOMAIN}:${XRAY_API_HTTPS_PORT:-9443}/")
   Approve pending discoveries as-is; Pi-hole settings are imported and applied automatically.
   Pi-hole credentials are sent only to an HTTPS backend (loopback HTTP is allowed for local development).
@@ -1163,8 +1323,8 @@ $(is_true "${INSTALL_XRAY:-false}" && echo "  - Identity: ${XRAY_DNS_IDENTITY_SU
 
 Useful:
   docker ps -a
-  cd $INSTALL_HOME/openvpn-tcp-wss && docker compose logs -f --tail=100
-  cd $INSTALL_HOME/openvpn-udp-wss && docker compose logs -f --tail=100
+$(want_tcp && echo "  cd $INSTALL_HOME/openvpn-tcp-wss && docker compose logs -f --tail=100")
+$(want_udp && echo "  cd $INSTALL_HOME/openvpn-udp-wss && docker compose logs -f --tail=100")
   cd $INSTALL_HOME/pi-hole && docker compose logs -f --tail=100
   cd $INSTALL_HOME/nginx-docker && docker compose logs -f --tail=50
 
@@ -1181,13 +1341,15 @@ run_post_install_check() {
   if ENV_FILE="${INSTALL_HOME}/site.env" "$SCRIPT_DIR/post-install-check.sh"; then
     info "post-install checks passed"
   else
-    warn "post-install checks failed — fix before dashboard registration (see output above)"
+    die "post-install checks failed — fix before dashboard registration (see output above)"
   fi
 }
 
 main() {
   if [[ "$RENDER_ONLY" -eq 0 ]]; then
     [[ "$(id -u)" -eq 0 ]] || die "run as root: sudo $0 ..."
+    # unattended-upgrades often holds the dpkg lock on a fresh VM: make every apt-get wait for it instead of failing.
+    echo 'DPkg::Lock::Timeout "900";' > /etc/apt/apt.conf.d/90dgsc-lock-wait
   fi
 
   if [[ "$WIZARD" -eq 1 ]] || [[ ! -f "$ENV_FILE" ]]; then
@@ -1212,6 +1374,7 @@ main() {
   fi
 
   if [[ "$SKIP_START" -eq 0 ]] && is_true "${START_STACKS:-true}"; then
+    stop_unselected_stacks
     setup_ovpn_dco
     # Order: OpenVPN → Pi-hole → nginx(HTTP, no Xray upstream) → certs
     #        → start Xray → full nginx (SNI + WSS)

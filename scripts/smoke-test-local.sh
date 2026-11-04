@@ -8,14 +8,19 @@ ENV_NO_XRAY="$TEST_ROOT/site.env.no-xray"
 ENV_XRAY="$TEST_ROOT/site.env.xray"
 RENDER_NO_XRAY="$TEST_ROOT/render-no-xray"
 RENDER_XRAY="$TEST_ROOT/render-xray"
+RENDER_UDP_ONLY="$TEST_ROOT/render-udp-only"
+RENDER_TCP_ONLY="$TEST_ROOT/render-tcp-only"
+RENDER_XRAY_ONLY="$TEST_ROOT/render-xray-only"
 FAIL=0
 
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*" >&2; FAIL=1; }
 
 write_test_env() {
-  local dest="$1" install_home="$2" with_xray="$3"
+  local dest="$1" install_home="$2" with_xray="$3" with_udp="${4:-true}" with_tcp="${5:-true}"
   cat >"$dest" <<EOF
+INSTALL_OPENVPN_UDP=${with_udp}
+INSTALL_OPENVPN_TCP=${with_tcp}
 PUBLIC_IP=203.0.113.50
 WAN_IF=eth0
 INSTALL_HOME=${install_home}
@@ -217,6 +222,72 @@ render "$ENV_XRAY"
 check_no_placeholders "$RENDER_XRAY"
 check_xray_host_assets "$RENDER_XRAY"
 
+echo "=== render single-protocol hosts ==="
+write_test_env "$TEST_ROOT/site.env.udp-only" "$RENDER_UDP_ONLY" false true false
+write_test_env "$TEST_ROOT/site.env.tcp-only" "$RENDER_TCP_ONLY" false false true
+write_test_env "$TEST_ROOT/site.env.xray-only" "$RENDER_XRAY_ONLY" true false false
+sed -i '/^UDP_WSS_DOMAIN=/d; /^TCP_WSS_DOMAIN=/d' "$TEST_ROOT/site.env.xray-only"
+render "$TEST_ROOT/site.env.udp-only"
+render "$TEST_ROOT/site.env.tcp-only"
+render "$TEST_ROOT/site.env.xray-only"
+for home in "$RENDER_UDP_ONLY" "$RENDER_TCP_ONLY" "$RENDER_XRAY_ONLY"; do
+  check_no_placeholders "$home"
+done
+[[ -d "$RENDER_UDP_ONLY/openvpn-udp-wss" && ! -e "$RENDER_UDP_ONLY/openvpn-tcp-wss" ]] \
+  && pass "udp-only renders only the UDP stack" || fail "udp-only stack dirs wrong"
+[[ -d "$RENDER_TCP_ONLY/openvpn-tcp-wss" && ! -e "$RENDER_TCP_ONLY/openvpn-udp-wss" ]] \
+  && pass "tcp-only renders only the TCP stack" || fail "tcp-only stack dirs wrong"
+[[ -d "$RENDER_XRAY_ONLY/datagate-monitor-xray" && ! -e "$RENDER_XRAY_ONLY/openvpn-tcp-wss" \
+  && ! -e "$RENDER_XRAY_ONLY/openvpn-udp-wss" ]] \
+  && pass "xray-only renders no OpenVPN stack" || fail "xray-only stack dirs wrong"
+for home in "$RENDER_UDP_ONLY" "$RENDER_XRAY_ONLY"; do
+  label="$(basename "$home")"
+  grep -q '^    network_mode: host$' "$home/pi-hole/docker-compose.yml" \
+    && pass "pihole host netns ($label)" || fail "pihole netns not host ($label)"
+  grep -q 'ip addr replace 10.51.40.1/32 dev dg-dns' "$home/host/datagate-dns-dummy.service" \
+    && pass "dummy DNS unit holds TCP .1 ($label)" || fail "dummy DNS unit wrong ($label)"
+  [[ ! -e "$home/host/datagate-pihole-after-tcp.service" ]] \
+    && pass "no pihole-after-tcp unit ($label)" || fail "pihole-after-tcp unit rendered without TCP ($label)"
+done
+grep -q '^PIHOLE_DNS_INTERFACE=dg-dns,ovpn-udp$' "$RENDER_UDP_ONLY/pi-hole/.env" \
+  && pass "udp-only Pi-hole on dg-dns + UDP tun" || fail "udp-only PIHOLE_DNS_INTERFACE wrong"
+grep -q '^PIHOLE_DNS_INTERFACE=dg-dns$' "$RENDER_XRAY_ONLY/pi-hole/.env" \
+  && pass "xray-only Pi-hole on dg-dns" || fail "xray-only PIHOLE_DNS_INTERFACE wrong"
+grep -q '^PIHOLE_DNS_INTERFACE=tun-tcp$' "$RENDER_TCP_ONLY/pi-hole/.env" \
+  && pass "tcp-only Pi-hole on TCP tun" || fail "tcp-only PIHOLE_DNS_INTERFACE wrong"
+grep -q 'network_mode: "container:openvpn-tcp-wss"' "$RENDER_TCP_ONLY/pi-hole/docker-compose.yml" \
+  && pass "tcp-only pihole joins TCP netns" || fail "tcp-only pihole netns"
+grep -q '^OPENVPN_TCP=false$' "$RENDER_UDP_ONLY/host/.env" && grep -q '^OPENVPN_UDP=true$' "$RENDER_UDP_ONLY/host/.env" \
+  && pass "udp-only host/.env stack flags" || fail "udp-only host/.env stack flags"
+grep -q 'server_name s1-test.datagateapp.com xs2-test.datagateapp.com;' "$RENDER_XRAY_ONLY/nginx-docker/nginx/conf.d/00-acme.conf" \
+  && fail "xray-only ACME lists WSS domains" || pass "xray-only ACME has no WSS domains"
+grep -q 'server_name xs2-test.datagateapp.com;' "$RENDER_XRAY_ONLY/nginx-docker/nginx/conf.d/00-acme.conf" \
+  && pass "xray-only ACME serves the Xray domain" || fail "xray-only ACME server_name wrong"
+if ( INSTALL_OPENVPN_UDP=false INSTALL_OPENVPN_TCP=false INSTALL_XRAY=false; \
+  sed 's/^INSTALL_OPENVPN_UDP=.*/INSTALL_OPENVPN_UDP=false/; s/^INSTALL_OPENVPN_TCP=.*/INSTALL_OPENVPN_TCP=false/' \
+    "$ENV_NO_XRAY" >"$TEST_ROOT/site.env.none"; render "$TEST_ROOT/site.env.none" ) >/dev/null 2>&1; then
+  fail "installer should refuse a host with no protocol"
+else
+  pass "installer refuses a host with no protocol"
+fi
+
+echo "=== nginx -t UDP-only / TCP-only / Xray-only ==="
+make_dummy_certs "$RENDER_UDP_ONLY/nginx-docker/certbot/conf" s1-test.datagateapp.com
+write_full_nginx_for_home "$RENDER_UDP_ONLY"
+[[ -f "$RENDER_UDP_ONLY/nginx-docker/nginx/conf.d/udp-wss.conf" && ! -e "$RENDER_UDP_ONLY/nginx-docker/nginx/conf.d/tcp-wss.conf" ]] \
+  && pass "udp-only nginx has only udp-wss.conf" || fail "udp-only nginx confs wrong"
+nginx_test "$RENDER_UDP_ONLY" udp-only
+make_dummy_certs "$RENDER_TCP_ONLY/nginx-docker/certbot/conf" s4-test.datagateapp.com
+write_full_nginx_for_home "$RENDER_TCP_ONLY"
+nginx_test "$RENDER_TCP_ONLY" tcp-only
+make_dummy_certs "$RENDER_XRAY_ONLY/nginx-docker/certbot/conf" xs2-test.datagateapp.com
+write_full_nginx_for_home "$RENDER_XRAY_ONLY"
+[[ ! -e "$RENDER_XRAY_ONLY/nginx-docker/nginx/conf.d/udp-wss.conf" && ! -e "$RENDER_XRAY_ONLY/nginx-docker/nginx/conf.d/tcp-wss.conf" ]] \
+  && pass "xray-only nginx has no WSS confs" || fail "xray-only nginx still has WSS confs"
+nginx_test "$RENDER_XRAY_ONLY" xray-only datagate-monitor-xray_xray_network
+compose_config "$RENDER_UDP_ONLY/pi-hole" pihole-udp-only
+compose_config "$RENDER_XRAY_ONLY/pi-hole" pihole-xray-only
+
 echo "=== nginx -t OpenVPN-only ==="
 make_dummy_certs "$RENDER_NO_XRAY/nginx-docker/certbot/conf" \
   s1-test.datagateapp.com s4-test.datagateapp.com
@@ -281,6 +352,9 @@ grep -q 'XRAY_DNS_IDENTITY_IFACE=eth0' "$RENDER_XRAY/datagate-monitor-xray/.env"
 
 echo "=== ssh scenario smoke ==="
 "$ROOT/scripts/smoke-test-ssh-scenarios.sh" || FAIL=1
+
+echo "=== installer result smoke ==="
+bash "$ROOT/scripts/smoke-test-install-result.sh" || FAIL=1
 
 if [[ "$FAIL" -eq 0 ]]; then
   echo "=== ALL SMOKE TESTS PASSED ==="
