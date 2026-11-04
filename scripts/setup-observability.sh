@@ -26,6 +26,7 @@ TOTP_OUT=""
 WAZUH_MANAGER=""
 WAZUH_PASSWORD_FILE=""
 AGENT_NAME=""
+SERVER_ROLE="vpn"
 WAZUH_VERSION="4.14.5"
 NODE_EXPORTER_VERSION="1.8.2"
 PROMETHEUS_IP=""
@@ -57,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --wazuh-manager) need_value "$1" "${2:-}"; WAZUH_MANAGER="$2"; shift 2 ;;
     --wazuh-password-file) need_value "$1" "${2:-}"; WAZUH_PASSWORD_FILE="$2"; shift 2 ;;
     --agent-name) need_value "$1" "${2:-}"; AGENT_NAME="$2"; shift 2 ;;
+    --server-role) need_value "$1" "${2:-}"; SERVER_ROLE="$2"; shift 2 ;;
     --wazuh-version) need_value "$1" "${2:-}"; WAZUH_VERSION="$2"; shift 2 ;;
     --node-exporter-version) need_value "$1" "${2:-}"; NODE_EXPORTER_VERSION="$2"; shift 2 ;;
     --prometheus-ip) need_value "$1" "${2:-}"; PROMETHEUS_IP="$2"; shift 2 ;;
@@ -132,72 +134,10 @@ EOF
 }
 
 install_wazuh_agent() {
-  export DEBIAN_FRONTEND=noninteractive
-  local wazuh_pass="" ver
-  if [[ -n "$WAZUH_PASSWORD_FILE" ]]; then
-    [[ -f "$WAZUH_PASSWORD_FILE" ]] || die "wazuh registration password file not found"
-    wazuh_pass="$(tr -d '\r\n' < "$WAZUH_PASSWORD_FILE")"
-    [[ -n "$wazuh_pass" ]] || die "wazuh registration password file is empty"
-    info "Wazuh agent will enroll with a registration password"
-  else
-    info "Wazuh agent will enroll without a registration password"
-  fi
-
-  if ! dpkg -s wazuh-agent >/dev/null 2>&1; then
-    info "Installing wazuh-agent ${WAZUH_VERSION} → manager ${WAZUH_MANAGER} name ${AGENT_NAME}"
-    apt-get update -qq
-    apt-get install -y -qq curl ca-certificates gnupg
-    install -d -m 0755 /usr/share/keyrings
-    rm -f /usr/share/keyrings/wazuh.gpg
-    curl -fsSL https://packages.wazuh.com/key/GPG-KEY-WAZUH | gpg --dearmor -o /usr/share/keyrings/wazuh.gpg
-    chmod 644 /usr/share/keyrings/wazuh.gpg
-    echo "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main" > /etc/apt/sources.list.d/wazuh.list
-    apt-get update -qq
-    # Read all of madison's output: an early awk exit gives apt-cache SIGPIPE, and with pipefail the script dies with 141.
-    ver="$(apt-cache madison wazuh-agent | awk -v want="$WAZUH_VERSION" '!ver && index($0, want) {ver = $3} END {print ver}')"
-    [[ -n "$ver" ]] || die "wazuh-agent ${WAZUH_VERSION} not found in the 4.x apt repo (pin must match the manager)"
-    if [[ -n "$wazuh_pass" ]]; then
-      WAZUH_MANAGER="$WAZUH_MANAGER" WAZUH_AGENT_NAME="$AGENT_NAME" WAZUH_REGISTRATION_PASSWORD="$wazuh_pass" \
-        apt-get install -y -qq "wazuh-agent=${ver}"
-    else
-      WAZUH_MANAGER="$WAZUH_MANAGER" WAZUH_AGENT_NAME="$AGENT_NAME" \
-        apt-get install -y -qq "wazuh-agent=${ver}"
-    fi
-    apt-mark hold wazuh-agent
-  else
-    info "wazuh-agent already installed — pointing it at ${WAZUH_MANAGER}"
-  fi
-
-  local conf=/var/ossec/etc/ossec.conf
-  [[ -f "$conf" ]] || die "missing $conf"
-  awk -v ip="$WAZUH_MANAGER" '
-    /<server>/ {s=1}
-    s && /<address>/ {
-      sub(/<address>[^<]*<\/address>/, "<address>" ip "</address>")
-      s=0
-    }
-    {print}
-  ' "$conf" > "${conf}.dgsc" && mv "${conf}.dgsc" "$conf"
-  chown root:wazuh "$conf" 2>/dev/null || chown root:root "$conf"
-  chmod 0640 "$conf"
-
-  local authd=/var/ossec/etc/authd.pass
-  if [[ -n "$wazuh_pass" ]]; then
-    local old_umask
-    old_umask="$(umask)"
-    umask 077
-    printf '%s\n' "$wazuh_pass" > "$authd"
-    umask "$old_umask"
-    chown root:wazuh "$authd" 2>/dev/null || chown root:root "$authd"
-    chmod 0640 "$authd"
-    info "Wrote Wazuh enrollment password to authd.pass"
-  fi
-  unset wazuh_pass
-
-  systemctl daemon-reload
-  systemctl enable wazuh-agent
-  systemctl restart wazuh-agent
-  info "wazuh-agent started (name ${AGENT_NAME}, manager ${WAZUH_MANAGER})"
+  [[ -f "$SCRIPT_DIR/setup-wazuh-agent.sh" ]] || die "missing setup-wazuh-agent.sh"
+  local args=(--manager "$WAZUH_MANAGER" --agent-name "$AGENT_NAME" --version "$WAZUH_VERSION" --role "$SERVER_ROLE")
+  [[ -z "$WAZUH_PASSWORD_FILE" ]] || args+=(--password-file "$WAZUH_PASSWORD_FILE")
+  bash "$SCRIPT_DIR/setup-wazuh-agent.sh" "${args[@]}"
 }
 
 write_sudoers() {
@@ -206,7 +146,7 @@ write_sudoers() {
   f=/etc/sudoers.d/datagate-installer
   cat > "$tmp" <<EOF
 # Server Control re-install after SSH is key + TOTP. Interactive sudo still asks for the password.
-${ADMIN_USER} ALL=(root) NOPASSWD: ${ROOT_DIR}/scripts/install-vpn-host.sh, ${ROOT_DIR}/scripts/setup-observability.sh, ${ROOT_DIR}/scripts/setup-host-ssh.sh, ${ROOT_DIR}/scripts/setup-host-console.sh
+${ADMIN_USER} ALL=(root) NOPASSWD: ${ROOT_DIR}/scripts/install-vpn-host.sh, ${ROOT_DIR}/scripts/install-dashboard-host.sh, ${ROOT_DIR}/scripts/setup-observability.sh, ${ROOT_DIR}/scripts/setup-host-ssh.sh, ${ROOT_DIR}/scripts/setup-host-console.sh
 EOF
   visudo -cf "$tmp"
   install -m 0440 "$tmp" "$f"

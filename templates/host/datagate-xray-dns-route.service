@@ -3,6 +3,8 @@ Description=DataGate route for Xray DNS identity subnet (Pi-hole replies)
 Documentation=https://github.com/imkolganov/DataGateVpnInstall
 After=docker.service network-online.target
 Wants=docker.service network-online.target
+StartLimitBurst=10
+StartLimitIntervalSec=300
 
 [Service]
 Type=oneshot
@@ -12,8 +14,6 @@ ExecStart=__INSTALL_HOME__/host/setup-xray-dns-identity-route.sh
 # Xray container may start after docker.service — retry until route is applied
 Restart=on-failure
 RestartSec=15
-StartLimitBurst=10
-StartLimitIntervalSec=300
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,51 @@
+name: datagate-monitor
+services:
+  backend:
+    image: __BACKEND_IMAGE__
+    container_name: datagate-monitor-backend
+    restart: unless-stopped
+    env_file:
+      - path: ./backend.env
+        format: raw
+    volumes:
+      - ./resources:/app/resources
+      - ./data-protection:/root/.aspnet/DataProtection-Keys
+    networks: [web, private]
+    depends_on:
+      redis:
+        condition: service_healthy
+    logging: &logging
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+  frontend:
+    image: __FRONTEND_IMAGE__
+    container_name: datagate-monitor-frontend
+    restart: unless-stopped
+    env_file:
+      - path: ./frontend.env
+        format: raw
+    networks: [web]
+    depends_on: [backend]
+    logging: *logging
+  redis:
+    image: __REDIS_IMAGE__
+    container_name: datagate-monitor-redis
+    restart: unless-stopped
+    command: [redis-server, --appendonly, "yes"]
+    volumes:
+      - ./redis:/data
+    networks: [private]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+networks:
+  web:
+    external: true
+    name: datagate_dashboard
+  private:
+    internal: true
