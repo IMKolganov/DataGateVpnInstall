@@ -75,6 +75,49 @@ Re-apply sshd/PAM later (if you skipped it):
 sudo ./scripts/setup-host-ssh.sh --user YOURNAME --apply-sshd-only
 ```
 
+### 2b) Console hardening (UpCloud web / serial console)
+
+`setup-observability.sh` runs this automatically after step 2. Manually:
+
+```bash
+sudo ./scripts/setup-host-console.sh --user YOURNAME --grub-password-file /path/to/grub.pass
+sudo ./scripts/setup-host-console.sh --user YOURNAME --skip-grub   # console TOTP + idle timeout only
+sudo ./scripts/setup-host-console.sh --user YOURNAME --no-totp --skip-grub   # host without 2FA
+```
+
+With or without 2FA (Server Control always enrols 2FA; the "without" path is for manual hosts):
+
+| Host | SSH | Console |
+|------|-----|---------|
+| 2FA | `setup-host-ssh.sh --user U ...` → key + TOTP | `setup-host-console.sh --user U ...` → password + TOTP |
+| no 2FA | `setup-host-ssh.sh --user U --skip-totp` → key only (root/password SSH still off) | `setup-host-console.sh --user U --no-totp ...` → password only |
+| 2FA → off | `setup-host-ssh.sh --user U --apply-sshd-only --skip-totp` | `setup-host-console.sh --user U --no-totp ...` (removes the TOTP line — run it, or the console stays locked) |
+| off → 2FA | enrol TOTP, then `setup-host-ssh.sh --user U --apply-sshd-only` | `setup-host-console.sh --user U ...` |
+
+Both scripts check every input before changing anything; `setup-host-ssh.sh` restores the previous sshd/PAM
+files if `sshd -t` rejects the new ones, and re-runs do not need apt mirrors when the packages are installed.
+
+- Console login (`/etc/pam.d/login`) asks for the password **and** the same TOTP as SSH. Accounts without
+  `~/.google_authenticator` (root included) cannot log in on the console.
+- GRUB superuser `dgsc-grub`: the host still boots unattended, but editing boot entries and recovery mode need
+  the password (Server Control shows it under **SSH access**). Recovery entries are removed. If the generated
+  `grub.cfg` would ask for a password at boot, the script rolls back.
+- Idle sessions end after 10 minutes (`--idle-timeout`, default 600 s), whatever is open in them:
+  | What sits idle | What ends it |
+  |---|---|
+  | bash at the prompt, also nested `bash` / `sudo -s` | `TMOUT` (read-only; `/etc/profile.d` + `/etc/bash.bashrc`) |
+  | a program (`vim`, `less`, `top`) over SSH | sshd `ChannelTimeout` (no traffic on the channel) |
+  | a program on the console | systemd-logind `StopIdleSessionSec` (no input on the tty; systemd 252+) |
+  | sftp, port forwards, `ssh -N`, unused ControlMaster connections | sshd `ChannelTimeout` / `UnusedConnectionTimeout` (OpenSSH 9.2+) |
+  | a dropped network connection | sshd `ClientAliveInterval 60` × 3 |
+
+  Not limited on purpose: an active session, and commands run without a tty (Server Control's installs and jobs can
+  be silent for longer than 10 minutes). `TMOUT` is not exported, so scripts started from a shell keep a normal
+  `read`.
+- An apt `DPkg::Post-Invoke` hook (`/usr/local/sbin/datagate-grub-guard`) puts `--unrestricted` back if a grub
+  package update replaces `/etc/grub.d/10_linux`; if it cannot, it removes the GRUB password so the host still boots.
+- `X11Forwarding no`.
+
 ### 3) VPN install
 
 ```bash
@@ -206,7 +249,7 @@ After host checks pass:
 1. Register UDP / TCP / Xray ApiUrls
 2. New servers get seeded export templates with AES-128-GCM (deploy backend/frontend first)
 3. Xray: JSON template with `dnsServers: ["10.51.x.1"]`
-4. Pi-hole: `http://10.51.x.1:8080`, prefix `10.80.x.`
+4. Pi-hole settings are announced automatically; approve the discovered server to save them and start its collector.
 5. Issue client links
 
 Client: Private DNS Off.
@@ -246,9 +289,14 @@ Managers self-announce with HTTPS domain ApiUrls (installer sets `PUBLIC_API_URL
 | OpenVPN UDP | `https://UDP_WSS_DOMAIN/` — type **OpenVPN** |
 | OpenVPN TCP | `https://TCP_WSS_DOMAIN/` — type **OpenVPN** |
 | Xray | `https://XRAY_DOMAIN:9443/` — type **Xray** (not OpenVPN; wrong type → JWT audience mismatch → **401**) |
-| Xray Pi-hole Base URL | `http://{PIHOLE_DNS_IP}:8080` (e.g. `http://10.51.48.1:8080`) |
-| Xray Pi-hole app password | same as `PIHOLE_WEBPASSWORD` |
-| Xray Pi-hole client subnet | identity prefix, e.g. `10.80.3.` |
+
+OpenVPN TCP/UDP and Xray announce `hasPiHole` plus the Pi-hole URL, password and collector settings to the HTTPS backend. Approving a discovery enables Pi-hole by default, imports its settings and applies them to the node in post-create setup. The review page lets you turn integration off before approval. Passwords are never returned in discovery responses.
+
+The installer passes `PIHOLE_BOOTSTRAP_*` defaults to each manager. TCP and UDP use their own VPN subnet prefixes; Xray uses its identity prefix. Persisted dashboard settings take precedence over these defaults. Explicit legacy `PIHOLE_*` overrides still take precedence for compatibility.
+
+Deploy SharedModels **1.0.86**, the backend with migration `VpnServerDiscovery_PiHoleBootstrap`, frontend and updated manager images before using these templates. For a pending discovery on an existing installation, re-render the stacks and recreate the managers so they announce credentials before you approve. Already registered servers keep their existing settings; anonymous re-announcements never replace trusted credentials.
+
+When registering manually, use the announced ApiUrl and enable Pi-hole integration; post-create setup imports the matching pending discovery's credentials. Complete manually entered Pi-hole settings are preserved.
 
 Existing hosts installed before this fix still announce `http://PUBLIC_IP:5010|5011/` until you re-render and recreate managers:
 
@@ -284,7 +332,8 @@ Issued Xray profiles default to **VLESS xHTTP on `:2053`** (`XRAY_CLIENT_LINK_TR
 | Pi-hole exits (128) | TCP OpenVPN recreated; Pi-hole still on old container id. `sudo systemctl restart datagate-pihole-after-tcp.service` (or `cd ~/pi-hole && docker compose up -d --force-recreate`). Enable the watcher unit so reboot / TCP recreate auto-fixes |
 | Pi-hole exits | OpenVPN TCP must be Up first; `docker logs datagate-pihole` |
 | no SSH after UFW | reconnect from `ADMIN_SSH_IP` or console; installer also allows session IP |
-| no SSH after 2FA | console/VNC: restore `/etc/ssh/sshd_config.bak.*` and `/etc/pam.d/sshd.bak.*`, `systemctl restart ssh` |
+| no SSH after 2FA | console: log in with password + TOTP, restore `/etc/ssh/sshd_config.bak.*` and `/etc/pam.d/sshd.bak.*`, `systemctl restart ssh` |
+| TOTP lost (SSH and console both refuse) | reboot from the UpCloud console, press `e` in GRUB, enter `dgsc-grub` + the GRUB password from **SSH access**, add `init=/bin/bash` to the `linux` line, boot (Ctrl+X), `mount -o remount,rw /`, restore `/etc/pam.d/login.bak.*`; or **Recreate** the server |
 | Xray won't start | certs must exist under `nginx-docker/certbot/conf/live/XRAY_DOMAIN/` |
 | OpenVPN slow / high CPU | 1 vCPU + WSS caps ~50–100 Mbit; installer picks AES-128-GCM if AES-NI else ChaCha; prefer Xray for speed; DCO: `lsmod \| grep ovpn` |
 | Xray DNS route unit failed | Prefer `host/setup-xray-dns-identity-route.sh` over inline `bash -c`; check `journalctl -xeu datagate-xray-dns-route` |
@@ -294,4 +343,5 @@ Local smoke test (developer machine):
 ```bash
 ./scripts/smoke-test-local.sh
 ./scripts/verify-installer.sh
+./scripts/docker-test-ssh-console.sh   # real sshd + PAM as root in ubuntu:24.04 (needs docker + network)
 ```

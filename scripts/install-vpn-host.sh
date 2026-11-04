@@ -496,6 +496,9 @@ TCP_TUN_IF=${TCP_TUN_DEV}
 TCP_DCO=${TCP_DCO:-true}
 TCP_CIPHER=${TCP_CIPHER:-AES-128-GCM}
 TCP_DATA_CIPHERS=${TCP_DATA_CIPHERS:-AES-128-GCM:CHACHA20-POLY1305}
+PIHOLE_BOOTSTRAP_BASE_URL=http://${PIHOLE_DNS_IP}:${PIHOLE_WEB_PORT:-8080}
+PIHOLE_BOOTSTRAP_APP_PASSWORD=${PIHOLE_WEBPASSWORD}
+PIHOLE_BOOTSTRAP_CLIENT_SUBNET_PREFIX=${TCP_VPN_SUBNET%.*}.
 EOF
 }
 
@@ -520,6 +523,9 @@ UDP_WAN_IF=${UDP_WAN_IF:-$WAN_IF}
 UDP_DCO=${UDP_DCO:-true}
 UDP_CIPHER=${UDP_CIPHER:-AES-128-GCM}
 UDP_DATA_CIPHERS=${UDP_DATA_CIPHERS:-AES-128-GCM:CHACHA20-POLY1305}
+PIHOLE_BOOTSTRAP_BASE_URL=http://${PIHOLE_DNS_IP}:${PIHOLE_WEB_PORT:-8080}
+PIHOLE_BOOTSTRAP_APP_PASSWORD=${PIHOLE_WEBPASSWORD}
+PIHOLE_BOOTSTRAP_CLIENT_SUBNET_PREFIX=${UDP_VPN_SUBNET%.*}.
 EOF
 }
 
@@ -795,7 +801,6 @@ XRAY_DNS_IDENTITY_SUBNET=${XRAY_DNS_IDENTITY_SUBNET}
 XRAY_DNS_IDENTITY_IFACE=eth0
 XRAY_PIHOLE_CLIENT_SUBNET_PREFIX=${prefix}
 XRAY_PIHOLE_EXCLUDE_PREFIXES=${exclude}
-PIHOLE_ENABLED=true
 PIHOLE_WEBPASSWORD=${PIHOLE_WEBPASSWORD}
 NGINX_CERTBOT_CONF=${nginx_certs}
 EOF
@@ -1150,8 +1155,8 @@ Self-announce ApiUrl (written into each stack .env as PUBLIC_API_URL):
   - UDP  OpenVPN  https://${UDP_WSS_DOMAIN}/
   - TCP  OpenVPN  https://${TCP_WSS_DOMAIN}/
 $(is_true "${INSTALL_XRAY:-false}" && echo "  - Xray          https://${XRAY_DOMAIN}:${XRAY_API_HTTPS_PORT:-9443}/")
-  Approve pending discoveries as-is (or register manually with the same URLs; do not mix types).
-$(is_true "${INSTALL_XRAY:-false}" && echo "  Xray Pi-hole: BaseURL=http://${PIHOLE_DNS_IP}:${PIHOLE_WEB_PORT:-8080}  app password=PIHOLE_WEBPASSWORD  client subnet=${XRAY_PIHOLE_CLIENT_SUBNET_PREFIX}")
+  Approve pending discoveries as-is; Pi-hole settings are imported and applied automatically.
+  Pi-hole credentials are sent only to an HTTPS backend (loopback HTTP is allowed for local development).
   - Backend: ${BACKEND__BASEURL}
   - Subnets: TCP ${TCP_VPN_SUBNET}/24 , UDP ${UDP_VPN_SUBNET}/24
 $(is_true "${INSTALL_XRAY:-false}" && echo "  - Identity: ${XRAY_DNS_IDENTITY_SUBNET}")

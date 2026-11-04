@@ -30,6 +30,10 @@ services:
       OpenVpnManagement__Port: ${UDP_MANAGEMENT_PORT}
       OpenVpnManagement__Host: "localhost"
       BACKEND__BASEURL: ${BACKEND__BASEURL}
+      # Defaults announced to the dashboard; runtime settings remain editable there.
+      PIHOLE_BOOTSTRAP_BASE_URL: ${PIHOLE_BOOTSTRAP_BASE_URL}
+      PIHOLE_BOOTSTRAP_APP_PASSWORD: ${PIHOLE_BOOTSTRAP_APP_PASSWORD}
+      PIHOLE_BOOTSTRAP_CLIENT_SUBNET_PREFIX: ${PIHOLE_BOOTSTRAP_CLIENT_SUBNET_PREFIX}
       PUBLIC_IP: ${PUBLIC_IP}
       # HTTPS WSS domain — installer sets this from UDP_WSS_DOMAIN for dashboard self-announce
       PUBLIC_API_URL: ${PUBLIC_API_URL}
