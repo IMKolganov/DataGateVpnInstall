@@ -1,0 +1,18 @@
+name: datagate-landing
+services:
+  landing:
+    build:
+      context: ./source
+      dockerfile: Dockerfile
+    container_name: datagate-landing
+    restart: unless-stopped
+    networks: [web]
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+networks:
+  web:
+    external: true
+    name: datagate_dashboard

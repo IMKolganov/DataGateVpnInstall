@@ -1,3 +1,8 @@
 site.env
+dashboard.env
+service-*.tar.gz
+*.ovpn
 *.env.local
 .env
+__pycache__/
+*.py[cod]

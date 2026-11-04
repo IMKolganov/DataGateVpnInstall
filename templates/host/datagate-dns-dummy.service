@@ -1,0 +1,16 @@
+[Unit]
+Description=DataGate Pi-hole DNS address on a dummy interface (host without OpenVPN TCP)
+Documentation=https://github.com/IMKolganov/DataGateVpnInstall
+# Pi-hole binds this address; it must exist before docker starts the container.
+Before=docker.service
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'ip link show __DNS_DUMMY_DEV__ >/dev/null 2>&1 || ip link add __DNS_DUMMY_DEV__ type dummy; ip addr replace __PIHOLE_DNS_IP__/32 dev __DNS_DUMMY_DEV__; ip link set __DNS_DUMMY_DEV__ up'
+ExecStop=/bin/sh -c 'ip link del __DNS_DUMMY_DEV__ 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target

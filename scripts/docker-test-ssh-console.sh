@@ -40,6 +40,7 @@ eff() { sshd -T 2>/dev/null | awk -v k="$1" '$1 == k { $1 = ""; sub(/^ /, ""); p
 # Console login through PAM "login": password, then (when asked) the code. Exit 0 = shell would open.
 console_login() { printf '%s\n%s\n' "$2" "${3:-}" | pamtester -I tty=ttyS0 login "$1" authenticate >/dev/null 2>&1; }
 code_at() { oathtool --totp -b "$SECRET" -N "$1"; }
+random_password() { od -An -N24 -tx1 /dev/urandom | tr -d ' \n'; }
 
 echo "=== 1) fresh host, SSH 2FA (what the dashboard does) ==="
 out="$(bash "$SSH" --user dgadmin --pubkey "$W/key.pub" --password-file "$W/pass" --totp-secret-file "$W/totp" --totp-out "$W/totp.out" 2>&1)" \
@@ -59,10 +60,14 @@ out="$(bash "$CONSOLE" --user dgadmin --skip-grub 2>&1)" && pass "setup-host-con
 console_login dgadmin "$PASS_TXT" "$(code_at now)" && pass "console: password + right code → in" || fail "console: right code rejected"
 console_login dgadmin "$PASS_TXT" "000000" && fail "console: wrong code accepted" || pass "console: wrong code → refused"
 console_login dgadmin "wrong-password" "$(code_at '+30 seconds')" && fail "console: wrong password accepted" || pass "console: wrong password → refused"
-useradd -m -s /bin/bash notp && echo 'notp:Notp-Test-Pass-1' | chpasswd
-console_login notp "Notp-Test-Pass-1" "123456" && fail "console: user without TOTP got in" || pass "console: user without TOTP → refused"
-echo 'root:Root-Test-Pass-1' | chpasswd
-console_login root "Root-Test-Pass-1" "123456" && fail "console: root got in" || pass "console: root → refused"
+# Disposable accounts get fresh credentials for each container run, never source-controlled passwords.
+NOTP_PASS_TXT="$(random_password)"
+ROOT_PASS_TXT="$(random_password)"
+useradd -m -s /bin/bash notp && printf 'notp:%s\n' "$NOTP_PASS_TXT" | chpasswd
+console_login notp "$NOTP_PASS_TXT" "123456" && fail "console: user without TOTP got in" || pass "console: user without TOTP → refused"
+printf 'root:%s\n' "$ROOT_PASS_TXT" | chpasswd
+console_login root "$ROOT_PASS_TXT" "123456" && fail "console: root got in" || pass "console: root → refused"
+unset NOTP_PASS_TXT ROOT_PASS_TXT
 
 echo "=== 3) re-run with apt mirrors unreachable (re-install / reset on a host without internet) ==="
 echo 'Acquire::http::Proxy "http://127.0.0.1:9/"; Acquire::https::Proxy "http://127.0.0.1:9/";' > /etc/apt/apt.conf.d/99-dead-proxy

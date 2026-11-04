@@ -1,0 +1,31 @@
+name: datagate-dashboard-nginx
+services:
+  nginx:
+    image: __NGINX_IMAGE__
+    container_name: datagate-dashboard-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./conf.d:/etc/nginx/conf.d:ro
+      - ./certbot/www:/var/www/certbot:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+    networks: [web]
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+  certbot:
+    image: __CERTBOT_IMAGE__
+    profiles: [tools]
+    volumes:
+      - ./certbot/www:/var/www/certbot
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/work:/var/lib/letsencrypt
+      - ./certbot/logs:/var/log/letsencrypt
+networks:
+  web:
+    external: true
+    name: datagate_dashboard

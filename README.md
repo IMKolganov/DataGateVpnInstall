@@ -1,13 +1,22 @@
 # VPN host install — copy folder, fill site.env, run one script
 
 Installs **OpenVPN TCP/UDP WSS + nginx (SNI) + Pi-hole + optional Xray** on a fresh Ubuntu host.
+Any subset works — e.g. OpenVPN UDP only, OpenVPN TCP only or Xray only: set `INSTALL_OPENVPN_UDP`,
+`INSTALL_OPENVPN_TCP` and `INSTALL_XRAY` in `site.env` (at least one `true`). Domains, certificates, nginx
+WSS blocks, UFW ports and post-install checks follow the selection. Without OpenVPN TCP, Pi-hole runs in the
+host netns and answers on TCP `.1` held by a dummy interface (`dg-dns`, `datagate-dns-dummy.service`), so UDP
+and Xray clients use the same DNS address as on a full host. A re-install with fewer stacks stops the
+unselected ones (`docker compose down`) and keeps their data directories.
+
+For the **dashboard host (Monitor + Redis + Telegram bot + landing)**, with the same SSH/console 2FA,
+Wazuh and tang-gate encryption, use [DASHBOARD.md](DASHBOARD.md) and `scripts/install-dashboard-host.sh`.
 
 ## Before you start
 
 1. Fresh Ubuntu server with SSH access (cloud image / root or `ubuntu`)
-2. DNS **A-records** already pointing to the server IP:
-   - `UDP_WSS_DOMAIN`
-   - `TCP_WSS_DOMAIN`
+2. DNS **A-records** already pointing to the server IP (only for the selected stacks):
+   - `UDP_WSS_DOMAIN` (if OpenVPN UDP)
+   - `TCP_WSS_DOMAIN` (if OpenVPN TCP)
    - `XRAY_DOMAIN` (if Xray enabled)
 3. Know your office/home IP (for SSH UFW allow-list)
 4. Your SSH **public** key on the laptop (`~/.ssh/id_ed25519.pub`)
@@ -154,7 +163,7 @@ The installer **refuses to run** while placeholders remain (`YOUR_*`, `example.c
 2. Preflight: `/dev/net/tun`, DNS → `PUBLIC_IP` warnings
 3. Renders stacks under `INSTALL_HOME` (`openvpn-tcp-wss`, `openvpn-udp-wss`, `pi-hole`, `nginx-docker`, optional `datagate-monitor-xray`, `host/`)
 4. Installs Docker (optional)
-5. UFW + `ip_forward` (SSH allowed for `ADMIN_SSH_IP` **and** your current SSH session IP)
+5. UFW + `ip_forward` + 4 MiB receive/send socket buffer limits (SSH allowed for `ADMIN_SSH_IP` **and** your current SSH session IP)
 6. Starts in order: OpenVPN → Pi-hole → nginx (HTTP) → **one Let's Encrypt cert per domain** → HTTPS configs → Xray (if enabled)
 
 ## Required `site.env` fields
@@ -322,6 +331,32 @@ Issued Xray profiles default to **VLESS xHTTP on `:2053`** (`XRAY_CLIENT_LINK_TR
 ```
 
 ## Troubleshooting
+
+### UDP socket buffer clamped
+
+`UDP SO_RCVBUF clamped to 425984 (requested 4194304)` means the host's
+`net.core.rmem_max` limits the UDP-over-WebSocket proxy's receive buffer. The proxy
+also requests a 4 MiB send buffer, controlled by `net.core.wmem_max`.
+The installer sets both limits in `/etc/sysctl.d/99-datagate-vpn.conf` during the
+UFW/sysctl step, before starting OpenVPN. This step is skipped by `--skip-ufw` or
+`SETUP_UFW=false`.
+
+On existing VPN hosts, apply the limits separately from the firewall setup:
+
+```bash
+sudo tee /etc/sysctl.d/99-datagate-udp-buffers.conf >/dev/null <<'EOF'
+net.core.rmem_max=4194304
+net.core.wmem_max=4194304
+EOF
+sudo sysctl -p /etc/sysctl.d/99-datagate-udp-buffers.conf
+sysctl net.core.rmem_max net.core.wmem_max
+```
+
+Both values should be `4194304` and persist after reboot. These containers use
+`network_mode: host`, so apply the limits on the host. New proxy connections use
+the updated limits; reconnect an existing VPN session to recreate its socket.
+
+### Other checks
 
 | Symptom | Check |
 |---------|--------|

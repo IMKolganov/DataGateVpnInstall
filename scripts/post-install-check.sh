@@ -5,6 +5,8 @@
 #   # or: INSTALL_HOME=/home/user ./scripts/post-install-check.sh
 #
 set -euo pipefail
+# Checks that pipe long output (ip route, ufw status, ss) use grep without -q: -q exits on the first match, the
+# writer gets SIGPIPE and pipefail turns a found line into a false FAIL.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -36,6 +38,26 @@ PIHOLE_DNS_IP="${TCP_VPN_SUBNET%.*}.1"
 : "${TCP_API_PORT:=5011}"
 : "${UDP_API_PORT:=5010}"
 : "${PIHOLE_WEB_PORT:=8080}"
+: "${DNS_DUMMY_DEV:=dg-dns}"
+
+is_true() {
+  case "${1:-}" in
+    true|TRUE|yes|YES|1|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Stacks selected for this host (hosts installed before these keys existed run both OpenVPN stacks).
+openvpn_stacks=()
+api_ports=()
+if is_true "${INSTALL_OPENVPN_TCP:-true}"; then
+  openvpn_stacks+=(openvpn-tcp-wss)
+  api_ports+=("$TCP_API_PORT")
+fi
+if is_true "${INSTALL_OPENVPN_UDP:-true}"; then
+  openvpn_stacks+=(openvpn-udp-wss)
+  api_ports+=("$UDP_API_PORT")
+fi
 
 echo "=== post-install check ($INSTALL_HOME) ==="
 
@@ -83,7 +105,7 @@ else
 fi
 
 # OpenVPN containers
-for name in openvpn-tcp-wss openvpn-udp-wss; do
+for name in "${openvpn_stacks[@]}"; do
   if docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null | grep -q true; then
     pass "$name running"
   else
@@ -97,9 +119,14 @@ if docker inspect --format '{{.State.Running}}' datagate-pihole 2>/dev/null | gr
 else
   code="$(docker inspect --format '{{.State.ExitCode}}' datagate-pihole 2>/dev/null || echo missing)"
   err="$(docker inspect --format '{{.State.Error}}' datagate-pihole 2>/dev/null || true)"
-  fail "datagate-pihole not running (exit=$code ${err}) — fix: sudo systemctl restart datagate-pihole-after-tcp.service"
+  if is_true "${INSTALL_OPENVPN_TCP:-true}"; then
+    fail "datagate-pihole not running (exit=$code ${err}) — fix: sudo systemctl restart datagate-pihole-after-tcp.service"
+  else
+    fail "datagate-pihole not running (exit=$code ${err}) — fix: sudo systemctl restart datagate-dns-dummy.service && cd \$INSTALL_HOME/pi-hole && docker compose up -d"
+  fi
 fi
 
+if is_true "${INSTALL_OPENVPN_TCP:-true}"; then
 tcp_id="$(docker inspect -f '{{.Id}}' openvpn-tcp-wss 2>/dev/null || true)"
 pihole_mode="$(docker inspect -f '{{.HostConfig.NetworkMode}}' datagate-pihole 2>/dev/null || echo missing)"
 if [[ -n "$tcp_id" ]]; then
@@ -126,6 +153,25 @@ if [[ -x "${INSTALL_HOME}/host/watch-pihole-after-tcp.sh" && -x "${INSTALL_HOME}
 else
   fail "missing ${INSTALL_HOME}/host/{watch,recreate}-pihole-after-tcp.sh — re-run installer or copy from DataGateVpnInstall"
 fi
+else
+  # No TCP stack: Pi-hole runs in the host netns and answers on the dummy interface that holds TCP .1.
+  pihole_mode="$(docker inspect -f '{{.HostConfig.NetworkMode}}' datagate-pihole 2>/dev/null || echo missing)"
+  if [[ "$pihole_mode" == "host" ]]; then
+    pass "datagate-pihole NetworkMode host (no OpenVPN TCP)"
+  else
+    fail "datagate-pihole NetworkMode=$pihole_mode, want host — re-run the installer"
+  fi
+  if systemctl is-enabled datagate-dns-dummy.service >/dev/null 2>&1; then
+    pass "datagate-dns-dummy.service enabled"
+  else
+    fail "datagate-dns-dummy.service not enabled — Pi-hole loses its address after reboot"
+  fi
+  if ip -4 -br addr show "$DNS_DUMMY_DEV" 2>/dev/null | grep -F "${PIHOLE_DNS_IP}/" >/dev/null; then
+    pass "$DNS_DUMMY_DEV holds $PIHOLE_DNS_IP"
+  else
+    fail "$DNS_DUMMY_DEV does not hold $PIHOLE_DNS_IP — sudo systemctl restart datagate-dns-dummy.service"
+  fi
+fi
 
 # DNS must answer on TCP tun .1 (FTL may still be importing — short retry)
 if command -v dig >/dev/null 2>&1; then
@@ -147,7 +193,7 @@ else
 fi
 
 # Cipher + DCO via manager API
-for port in "$TCP_API_PORT" "$UDP_API_PORT"; do
+for port in "${api_ports[@]}"; do
   label="api:$port"
   json="$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/api/info" 2>/dev/null || true)"
   if [[ -z "$json" ]]; then
@@ -171,14 +217,16 @@ for port in "$TCP_API_PORT" "$UDP_API_PORT"; do
 done
 
 # DCO kernel module
-if lsmod 2>/dev/null | awk '{print $1}' | grep -qE '^ovpn'; then
+if [[ "${#openvpn_stacks[@]}" -eq 0 ]]; then
+  :
+elif lsmod 2>/dev/null | awk '{print $1}' | grep -E '^ovpn' >/dev/null; then
   pass "kernel ovpn/dco module loaded"
 else
   warn "no ovpn module in lsmod — DCO may be userspace-only"
 fi
 
 # Compose has CIPHER wired
-for stack in openvpn-tcp-wss openvpn-udp-wss; do
+for stack in "${openvpn_stacks[@]}"; do
   yml="$INSTALL_HOME/$stack/docker-compose.yml"
   if [[ -f "$yml" ]] && grep -q 'CIPHER:' "$yml"; then
     pass "$stack compose has CIPHER"
@@ -186,13 +234,6 @@ for stack in openvpn-tcp-wss openvpn-udp-wss; do
     fail "$stack compose missing CIPHER env"
   fi
 done
-
-is_true() {
-  case "${1:-}" in
-    true|TRUE|yes|YES|1|on|ON) return 0 ;;
-    *) return 1 ;;
-  esac
-}
 
 if is_true "${INSTALL_XRAY:-false}"; then
   : "${XRAY_DNS_IDENTITY_SUBNET:?XRAY_DNS_IDENTITY_SUBNET required}"
@@ -209,7 +250,7 @@ if is_true "${INSTALL_XRAY:-false}"; then
     fail "XRAY_DNS_IDENTITY_IFACE must be eth0 (got: ${iface:-empty})"
   fi
 
-  if ip route | grep -q "${XRAY_DNS_IDENTITY_SUBNET%/*}"; then
+  if ip route | grep -F "${XRAY_DNS_IDENTITY_SUBNET%/*}" >/dev/null; then
     pass "host route for identity subnet"
   else
     fail "missing host route for $XRAY_DNS_IDENTITY_SUBNET — systemctl start datagate-xray-dns-route"
@@ -228,12 +269,12 @@ if is_true "${INSTALL_XRAY:-false}"; then
   fi
 
   if command -v ufw >/dev/null 2>&1; then
-    if ufw status 2>/dev/null | grep -q "$PIHOLE_DNS_IP.*53"; then
+    if ufw status 2>/dev/null | grep "$PIHOLE_DNS_IP.*53" >/dev/null; then
       pass "UFW mentions Pi-hole :53"
     else
       warn "UFW status did not show $PIHOLE_DNS_IP:53 — verify identity DNS rules"
     fi
-    if ufw status 2>/dev/null | grep -q "${XRAY_DNS_IDENTITY_SUBNET}"; then
+    if ufw status 2>/dev/null | grep -F "${XRAY_DNS_IDENTITY_SUBNET}" >/dev/null; then
       pass "UFW mentions identity subnet $XRAY_DNS_IDENTITY_SUBNET"
     else
       fail "UFW missing identity subnet $XRAY_DNS_IDENTITY_SUBNET (DNS from sendThrough)"
@@ -280,7 +321,7 @@ if is_true "${INSTALL_XRAY:-false}"; then
         fi
 
         if command -v ss >/dev/null 2>&1; then
-          if ss -lnt 2>/dev/null | grep -qE "[:.]${xhttp_port}[[:space:]]"; then
+          if ss -lnt 2>/dev/null | grep -E "[:.]${xhttp_port}[[:space:]]" >/dev/null; then
             pass "xHTTP port :$xhttp_port is listening"
           else
             fail "nothing listening on :$xhttp_port — check compose port publish and the inbound"
