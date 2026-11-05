@@ -12,6 +12,9 @@ services:
       FTLCONF_dns_interface: ${PIHOLE_DNS_INTERFACE}
       FTLCONF_webserver_port: ${PIHOLE_WEB_PORT:-8080}
       FTLCONF_dns_blocking_active: 'false'
+      # Load etc-dnsmasq.d: 10-datagate-blocklist.conf answers 0.0.0.0/:: for blocked domains
+      # independently of gravity blocking, which stays off.
+      FTLCONF_misc_etc_dnsmasq_d: 'true'
       FTLCONF_webserver_session_restore: 'false'
       FTLCONF_webserver_api_max_sessions: '32'
     volumes:

@@ -113,6 +113,37 @@ for name in "${openvpn_stacks[@]}"; do
   fi
 done
 
+# WSS-only must hold at the sockets, even if Docker or firewall rules change later.
+if is_true "${OPENVPN_WSS_ONLY:-true}"; then
+  for name in "${openvpn_stacks[@]}"; do
+    mode="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$name" 2>/dev/null || true)"
+    if [[ "$mode" == host ]]; then
+      pass "$name uses host networking without Docker port publication"
+    else
+      fail "$name WSS-only requires host networking (got: $mode)"
+    fi
+    if [[ "$name" == openvpn-tcp-wss ]]; then
+      port="${TCP_PORT:-1297}"; transport=tcp
+      listeners="$(ss -H -lnt "sport = :$port" 2>/dev/null | awk '{print $4}')"
+    else
+      port="${UDP_PORT:-1194}"; transport=udp
+      listeners="$(ss -H -lnu "sport = :$port" 2>/dev/null | awk '{print $4}')"
+    fi
+    if [[ -n "$listeners" ]] && ! grep -vFx "127.0.0.1:$port" <<<"$listeners" >/dev/null; then
+      pass "$name $transport :$port listens only on 127.0.0.1"
+    else
+      fail "$name raw $transport :$port must listen only on 127.0.0.1 (got: ${listeners:-none})"
+    fi
+  done
+  if [[ "${#openvpn_stacks[@]}" -gt 0 ]]; then
+    if command -v ufw >/dev/null && ufw status verbose 2>/dev/null | grep -F 'Default: deny (incoming)' >/dev/null; then
+      pass "UFW default deny incoming protects manager APIs"
+    else
+      fail "WSS-only requires active UFW with default deny incoming for manager APIs"
+    fi
+  fi
+fi
+
 # Pi-hole must share openvpn-tcp-wss netns — Exited(128) after TCP recreate is a hard fail
 if docker inspect --format '{{.State.Running}}' datagate-pihole 2>/dev/null | grep -q true; then
   pass "datagate-pihole running"
@@ -190,6 +221,29 @@ if command -v dig >/dev/null 2>&1; then
   fi
 else
   warn "dig not installed — skipped Pi-hole DNS probe"
+fi
+
+# Blocked destinations: DNS sinkhole in Pi-hole + reject chain for forwarded VPN traffic
+if is_true "${BLOCKLIST_ENABLED:-true}"; then
+  if command -v dig >/dev/null 2>&1; then
+    blocked="$(dig @"$PIHOLE_DNS_IP" esia.gosuslugi.ru A +time=2 +tries=1 +short 2>/dev/null || true)"
+    if [[ "$blocked" == "0.0.0.0" ]]; then
+      pass "Pi-hole sinkholes blocklist domains (esia.gosuslugi.ru → 0.0.0.0)"
+    else
+      fail "Pi-hole resolves esia.gosuslugi.ru to '${blocked:-nothing}' — check ${INSTALL_HOME}/pi-hole/etc-dnsmasq.d/10-datagate-blocklist.conf and FTLCONF_misc_etc_dnsmasq_d"
+    fi
+  fi
+  if iptables -C DOCKER-USER ! -i "${WAN_IF:-eth0}" -j DATAGATE-BLOCK 2>/dev/null \
+    && [[ "$(iptables -S DATAGATE-BLOCK 2>/dev/null | grep -c -- '-j REJECT')" -gt 0 ]]; then
+    pass "DATAGATE-BLOCK rejects blocklist ranges for VPN traffic"
+  else
+    fail "DATAGATE-BLOCK chain missing or empty — sudo systemctl restart datagate-blocklist.service"
+  fi
+  if systemctl is-enabled datagate-blocklist.service >/dev/null 2>&1; then
+    pass "datagate-blocklist.service enabled"
+  else
+    fail "datagate-blocklist.service not enabled — blocklist rules are lost on reboot"
+  fi
 fi
 
 # Cipher + DCO via manager API
