@@ -1,5 +1,7 @@
 # VPN host install — copy folder, fill site.env, run one script
 
+The installer release is recorded in [`VERSION`](VERSION).
+
 Installs **OpenVPN TCP/UDP WSS + nginx (SNI) + Pi-hole + optional Xray** on a fresh Ubuntu host.
 Any subset works — e.g. OpenVPN UDP only, OpenVPN TCP only or Xray only: set `INSTALL_OPENVPN_UDP`,
 `INSTALL_OPENVPN_TCP` and `INSTALL_XRAY` in `site.env` (at least one `true`). Domains, certificates, nginx
