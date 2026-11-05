@@ -15,6 +15,9 @@ echo "=== [0/7] smoke-test-ssh-scenarios.sh ==="
 echo "=== OpenVPN WSS-only policy ==="
 bash "$ROOT/scripts/smoke-test-openvpn-wss-only.sh"
 
+echo "=== Blocked destinations (MAX, Gosuslugi) ==="
+bash "$ROOT/scripts/smoke-test-blocklist.sh"
+
 echo "=== [0b/7] smoke-test-console-hardening.sh ==="
 "$ROOT/scripts/smoke-test-console-hardening.sh"
 

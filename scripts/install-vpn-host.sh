@@ -201,6 +201,7 @@ CERTBOT_EMAIL=${CERTBOT_EMAIL}
 INSTALL_OPENVPN_UDP=${INSTALL_OPENVPN_UDP}
 INSTALL_OPENVPN_TCP=${INSTALL_OPENVPN_TCP}
 OPENVPN_WSS_ONLY=${OPENVPN_WSS_ONLY}
+BLOCKLIST_ENABLED=${BLOCKLIST_ENABLED:-true}
 UDP_WSS_DOMAIN=${UDP_WSS_DOMAIN}
 TCP_WSS_DOMAIN=${TCP_WSS_DOMAIN}
 HFS_DOMAIN=${HFS_DOMAIN}
@@ -300,6 +301,11 @@ load_env() {
   case "$OPENVPN_WSS_ONLY" in
     true|TRUE|yes|YES|1|on|ON|false|FALSE|no|NO|0|off|OFF) ;;
     *) die "OPENVPN_WSS_ONLY must be true or false" ;;
+  esac
+  : "${BLOCKLIST_ENABLED:=true}"
+  case "$BLOCKLIST_ENABLED" in
+    true|TRUE|yes|YES|1|on|ON|false|FALSE|no|NO|0|off|OFF) ;;
+    *) die "BLOCKLIST_ENABLED must be true or false" ;;
   esac
   : "${INSTALL_XRAY:=false}"
   : "${UDP_WSS_DOMAIN:=}"
@@ -604,6 +610,7 @@ write_host_env() {
 OPENVPN_TCP=$(want_tcp && echo true || echo false)
 OPENVPN_UDP=$(want_udp && echo true || echo false)
 OPENVPN_WSS_ONLY=${OPENVPN_WSS_ONLY:-true}
+BLOCKLIST_ENABLED=${BLOCKLIST_ENABLED:-true}
 TCP_VPN_SUBNET=${TCP_VPN_SUBNET}
 UDP_VPN_SUBNET=${UDP_VPN_SUBNET}
 PIHOLE_DNS_IP=${PIHOLE_DNS_IP}
@@ -835,6 +842,57 @@ sync_dns_dummy_assets() {
   render_file "$TEMPLATES/host/datagate-dns-dummy.service" "$home/host/datagate-dns-dummy.service"
 }
 
+# Blocked destinations (blocklist/): Pi-hole answers 0.0.0.0/:: for the domains, and
+# apply-blocklist-firewall.sh rejects the dedicated ranges for all forwarded VPN traffic.
+sync_blocklist_assets() {
+  local home="$INSTALL_HOME"
+  mkdir -p "$home/host/blocklist"
+  cp "$ROOT_DIR/blocklist/ru-services.domains" "$ROOT_DIR/blocklist/ru-services.cidrs" "$home/host/blocklist/"
+  cp "$SCRIPT_DIR/apply-blocklist-firewall.sh" "$home/host/apply-blocklist-firewall.sh"
+  chmod +x "$home/host/apply-blocklist-firewall.sh"
+  render_file "$TEMPLATES/host/datagate-blocklist.service" "$home/host/datagate-blocklist.service"
+}
+
+write_pihole_blocklist() {
+  local dest="$1" domain
+  if ! is_true "$BLOCKLIST_ENABLED"; then
+    rm -f "$dest"
+    return 0
+  fi
+  {
+    echo "# Rendered by install-vpn-host.sh from blocklist/ru-services.domains — do not edit here."
+    while IFS= read -r domain; do
+      domain="${domain%%#*}"
+      domain="$(echo "$domain" | xargs)"
+      [[ -z "$domain" ]] && continue
+      [[ "$domain" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || die "bad domain in blocklist: $domain"
+      # address=/d/ also covers every subdomain of d.
+      echo "address=/${domain}/0.0.0.0"
+      echo "address=/${domain}/::"
+    done <"$ROOT_DIR/blocklist/ru-services.domains"
+  } >"$dest"
+}
+
+install_blocklist_service() {
+  local unit_src="$INSTALL_HOME/host/datagate-blocklist.service"
+  if grep -qE '__[A-Z0-9_]+__' "$unit_src"; then
+    warn "unresolved placeholders in $unit_src — fix INSTALL_HOME in site.env and re-render"
+    return 0
+  fi
+  if ! is_true "$BLOCKLIST_ENABLED"; then
+    systemctl disable --now datagate-blocklist.service >/dev/null 2>&1 || true
+    ENV_FILE="$INSTALL_HOME/host/.env" "$INSTALL_HOME/host/apply-blocklist-firewall.sh" --remove \
+      || warn "could not remove blocklist firewall rules"
+    return 0
+  fi
+  info "Enabling systemd unit for blocked VPN destinations (survives reboot)"
+  install -m 0644 "$unit_src" /etc/systemd/system/datagate-blocklist.service
+  systemctl daemon-reload
+  systemctl enable datagate-blocklist.service
+  # restart, not start: a re-install must re-read an updated CIDR list.
+  systemctl restart datagate-blocklist.service || warn "datagate-blocklist.service failed — check: journalctl -u datagate-blocklist"
+}
+
 write_pihole_compose() {
   local dest="$1"
   if want_tcp; then
@@ -894,6 +952,13 @@ XRAY_PIHOLE_EXCLUDE_PREFIXES=${exclude}
 PIHOLE_WEBPASSWORD=${PIHOLE_WEBPASSWORD}
 NGINX_CERTBOT_CONF=${nginx_certs}
 EOF
+  # render-config.sh routes these to a blackhole by SNI — reaches shared-CDN hosts the firewall cannot.
+  if is_true "$BLOCKLIST_ENABLED"; then
+    cat >>"$dest" <<EOF
+XRAY_BLOCKLIST_DOMAINS_FILE=/data/blocklist/ru-services.domains
+XRAY_BLOCKLIST_CIDRS_FILE=/data/blocklist/ru-services.cidrs
+EOF
+  fi
 }
 
 ensure_xray_network() {
@@ -985,6 +1050,7 @@ render_stacks() {
 
   write_pihole_compose "$home/pi-hole/docker-compose.yml"
   write_pihole_env "$home/pi-hole/.env"
+  write_pihole_blocklist "$home/pi-hole/etc-dnsmasq.d/10-datagate-blocklist.conf"
   render_file "$TEMPLATES/pi-hole/wait-tun0-and-start.sh" "$home/pi-hole/wait-tun0-and-start.sh"
   chmod +x "$home/pi-hole/wait-tun0-and-start.sh"
 
@@ -997,6 +1063,7 @@ render_stacks() {
   fi
 
   write_host_env "$home/host/.env"
+  sync_blocklist_assets
   if want_tcp; then
     sync_pihole_after_tcp_assets
   else
@@ -1009,6 +1076,9 @@ render_stacks() {
     mkdir -p "$home/datagate-monitor-xray/data/xray_data"
     cp "$TEMPLATES/xray/docker-compose.yml" "$home/datagate-monitor-xray/docker-compose.yml"
     write_xray_env "$home/datagate-monitor-xray/.env"
+    mkdir -p "$home/datagate-monitor-xray/data/xray_data/blocklist"
+    cp "$ROOT_DIR/blocklist/ru-services.domains" "$ROOT_DIR/blocklist/ru-services.cidrs" \
+      "$home/datagate-monitor-xray/data/xray_data/blocklist/"
     sync_xray_dns_route_assets
   fi
 
@@ -1389,6 +1459,12 @@ main() {
 
   if [[ "$SKIP_UFW" -eq 0 ]] && is_true "${SETUP_UFW:-true}"; then
     setup_ufw
+  fi
+
+  if systemctl is-active --quiet docker 2>/dev/null; then
+    install_blocklist_service
+  else
+    warn "Docker is not running — blocklist firewall rules not applied (re-run the installer later)"
   fi
 
   if [[ "$SKIP_START" -eq 0 ]] && is_true "${START_STACKS:-true}"; then

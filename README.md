@@ -23,6 +23,18 @@ bash scripts/smoke-test-openvpn-wss-only.sh
 OPENVPN_TEST_IMAGE=imkolganov/datagate-monitor-openvpn:YOUR_TAG bash scripts/smoke-test-openvpn-loopback.sh
 ```
 
+`BLOCKLIST_ENABLED=true` (default) keeps VPN clients away from the services in `blocklist/` — MAX and
+Gosuslugi. Pi-hole answers `0.0.0.0`/`::` for every domain in `ru-services.domains` (with subdomains), and
+`apply-blocklist-firewall.sh` rejects `ru-services.cidrs` in a `DATAGATE-BLOCK` chain hooked into `DOCKER-USER`,
+which covers OpenVPN tunnels and the Xray bridge alike (`datagate-blocklist.service` re-applies it at boot).
+Refresh the domains from the Monitor DNS log and see which resolved addresses the CIDR list misses:
+
+```bash
+DATABASE_URL=postgres://... ./scripts/blocklist-from-db.sh --check-cidrs
+```
+
+List a CIDR only when nothing but the blocked service uses it; shared CDN ranges stay DNS-only.
+
 For the **dashboard host (Monitor + Redis + Telegram bot + landing)**, with the same SSH/console 2FA,
 Wazuh and tang-gate encryption, use [DASHBOARD.md](DASHBOARD.md) and `scripts/install-dashboard-host.sh`.
 
