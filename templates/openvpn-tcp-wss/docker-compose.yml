@@ -5,12 +5,15 @@ services:
     container_name: openvpn-tcp-wss
     restart: unless-stopped
     network_mode: host
+    # Host networking has no published Docker ports. WSS-only additionally binds OpenVPN to loopback.
+    entrypoint: ["/bin/bash", "/wss-entrypoint.sh"]
     cap_add:
       - NET_ADMIN
     devices:
       - "/dev/net/tun:/dev/net/tun"
     volumes:
       - ./data:/openvpn-tcp-wss
+      - ./wss-entrypoint.sh:/wss-entrypoint.sh:ro
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
       DNS1: ${TCP_DNS1}
@@ -22,6 +25,7 @@ services:
       PORT: ${TCP_PORT}
       API_PORT: ${TCP_API_PORT}
       PROTO: tcp
+      OPENVPN_WSS_ONLY: ${OPENVPN_WSS_ONLY:-true}
       OpenVpnManagement__Port: ${TCP_MANAGEMENT_PORT}
       OpenVpnManagement__Host: "localhost"
       BACKEND__BASEURL: ${BACKEND__BASEURL}

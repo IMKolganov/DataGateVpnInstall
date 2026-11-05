@@ -5,12 +5,15 @@ services:
     container_name: openvpn-udp-wss
     restart: unless-stopped
     network_mode: host
+    # Host networking has no published Docker ports. WSS-only additionally binds OpenVPN to loopback.
+    entrypoint: ["/bin/bash", "/wss-entrypoint.sh"]
     cap_add:
       - NET_ADMIN
     devices:
       - "/dev/net/tun:/dev/net/tun"
     volumes:
       - ./data:/openvpn-udp-wss
+      - ./wss-entrypoint.sh:/wss-entrypoint.sh:ro
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
       DNS1: ${UDP_DNS1}
@@ -24,6 +27,7 @@ services:
       PORT: ${UDP_PORT}
       API_PORT: ${UDP_API_PORT}
       PROTO: udp
+      OPENVPN_WSS_ONLY: ${OPENVPN_WSS_ONLY:-true}
       DCO: ${UDP_DCO:-true}
       CIPHER: ${UDP_CIPHER:-AES-128-GCM}
       DATA_CIPHERS: ${UDP_DATA_CIPHERS:-AES-128-GCM:CHACHA20-POLY1305}

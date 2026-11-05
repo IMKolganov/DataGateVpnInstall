@@ -8,6 +8,21 @@ host netns and answers on TCP `.1` held by a dummy interface (`dg-dns`, `datagat
 and Xray clients use the same DNS address as on a full host. A re-install with fewer stacks stops the
 unselected ones (`docker compose down`) and keeps their data directories.
 
+`OPENVPN_WSS_ONLY=true` is the default for new installations. Raw OpenVPN TCP/UDP listeners bind to
+`127.0.0.1`, including when restarted through the manager. OpenVPN uses host networking without published
+Docker ports, so Docker cannot publish these listeners through a port mapping. nginx/WSS reaches the local
+OpenVPN manager through the Docker bridge. UFW allows that bridge, but does not open raw VPN ports or
+direct manager APIs to the dashboard. Set `OPENVPN_WSS_ONLY=false` to restore direct OpenVPN access.
+WSS-only requires UFW enabled; post-install checks verify the actual TCP/UDP listen addresses.
+
+Validate both modes without touching live services:
+
+```bash
+bash scripts/smoke-test-openvpn-wss-only.sh
+# Optional: actual TCP/UDP sockets in disposable containers with --network none (cached image required).
+OPENVPN_TEST_IMAGE=imkolganov/datagate-monitor-openvpn:YOUR_TAG bash scripts/smoke-test-openvpn-loopback.sh
+```
+
 For the **dashboard host (Monitor + Redis + Telegram bot + landing)**, with the same SSH/console 2FA,
 Wazuh and tang-gate encryption, use [DASHBOARD.md](DASHBOARD.md) and `scripts/install-dashboard-host.sh`.
 

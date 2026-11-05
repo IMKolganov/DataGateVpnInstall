@@ -150,6 +150,7 @@ run_wizard() {
   [[ -n "$CERTBOT_EMAIL" ]] || die "CERTBOT_EMAIL is required"
   ask INSTALL_OPENVPN_UDP "Install OpenVPN UDP? (true/false)" "true"
   ask INSTALL_OPENVPN_TCP "Install OpenVPN TCP? (true/false)" "true"
+  ask OPENVPN_WSS_ONLY "OpenVPN through WSS only, hide direct ports? (true/false)" "true"
   UDP_WSS_DOMAIN=""
   TCP_WSS_DOMAIN=""
   if want_udp; then
@@ -199,6 +200,7 @@ INSTALL_HOME=${INSTALL_HOME}
 CERTBOT_EMAIL=${CERTBOT_EMAIL}
 INSTALL_OPENVPN_UDP=${INSTALL_OPENVPN_UDP}
 INSTALL_OPENVPN_TCP=${INSTALL_OPENVPN_TCP}
+OPENVPN_WSS_ONLY=${OPENVPN_WSS_ONLY}
 UDP_WSS_DOMAIN=${UDP_WSS_DOMAIN}
 TCP_WSS_DOMAIN=${TCP_WSS_DOMAIN}
 HFS_DOMAIN=${HFS_DOMAIN}
@@ -294,6 +296,11 @@ load_env() {
   : "${INSTALL_HOME:?INSTALL_HOME required}"
   : "${INSTALL_OPENVPN_UDP:=true}"
   : "${INSTALL_OPENVPN_TCP:=true}"
+  : "${OPENVPN_WSS_ONLY:=true}"
+  case "$OPENVPN_WSS_ONLY" in
+    true|TRUE|yes|YES|1|on|ON|false|FALSE|no|NO|0|off|OFF) ;;
+    *) die "OPENVPN_WSS_ONLY must be true or false" ;;
+  esac
   : "${INSTALL_XRAY:=false}"
   : "${UDP_WSS_DOMAIN:=}"
   : "${TCP_WSS_DOMAIN:=}"
@@ -528,6 +535,7 @@ BACKEND__BASEURL=${BACKEND__BASEURL}
 ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
 PUBLIC_IP=${PUBLIC_IP}
 PUBLIC_API_URL=${api_url}
+OPENVPN_WSS_ONLY=${OPENVPN_WSS_ONLY:-true}
 TCP_VPN_SUBNET=${TCP_VPN_SUBNET}
 TCP_VPN_NETMASK=${TCP_VPN_NETMASK:-255.255.255.0}
 TCP_DNS1=${TCP_DNS1}
@@ -555,6 +563,7 @@ BACKEND__BASEURL=${BACKEND__BASEURL}
 ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
 PUBLIC_IP=${PUBLIC_IP}
 PUBLIC_API_URL=${api_url}
+OPENVPN_WSS_ONLY=${OPENVPN_WSS_ONLY:-true}
 UDP_VPN_SUBNET=${UDP_VPN_SUBNET}
 UDP_VPN_NETMASK=${UDP_VPN_NETMASK:-255.255.255.0}
 UDP_DNS1=${UDP_DNS1}
@@ -594,6 +603,7 @@ write_host_env() {
   cat >"$dest" <<EOF
 OPENVPN_TCP=$(want_tcp && echo true || echo false)
 OPENVPN_UDP=$(want_udp && echo true || echo false)
+OPENVPN_WSS_ONLY=${OPENVPN_WSS_ONLY:-true}
 TCP_VPN_SUBNET=${TCP_VPN_SUBNET}
 UDP_VPN_SUBNET=${UDP_VPN_SUBNET}
 PIHOLE_DNS_IP=${PIHOLE_DNS_IP}
@@ -962,12 +972,14 @@ render_stacks() {
   if want_tcp; then
     mkdir -p "$home/openvpn-tcp-wss/data"
     cp "$TEMPLATES/openvpn-tcp-wss/docker-compose.yml" "$home/openvpn-tcp-wss/docker-compose.yml"
+    cp "$TEMPLATES/openvpn-wss-entrypoint.sh" "$home/openvpn-tcp-wss/wss-entrypoint.sh"
     write_openvpn_tcp_env "$home/openvpn-tcp-wss/.env"
   fi
 
   if want_udp; then
     mkdir -p "$home/openvpn-udp-wss/data"
     cp "$TEMPLATES/openvpn-udp-wss/docker-compose.yml" "$home/openvpn-udp-wss/docker-compose.yml"
+    cp "$TEMPLATES/openvpn-wss-entrypoint.sh" "$home/openvpn-udp-wss/wss-entrypoint.sh"
     write_openvpn_udp_env "$home/openvpn-udp-wss/.env"
   fi
 
@@ -1361,6 +1373,12 @@ main() {
   [[ "$WIZARD" -eq 1 ]] && run_wizard
   load_env
   preflight
+
+  if [[ "$RENDER_ONLY" -eq 0 ]] && want_openvpn && is_true "$OPENVPN_WSS_ONLY"; then
+    if [[ "$SKIP_UFW" -ne 0 ]] || ! is_true "${SETUP_UFW:-true}"; then
+      die "OPENVPN_WSS_ONLY=true requires SETUP_UFW=true and no --skip-ufw (manager APIs need firewall protection)"
+    fi
+  fi
 
   render_stacks
   [[ "$RENDER_ONLY" -eq 1 ]] && { info "render-only complete → $INSTALL_HOME"; exit 0; }

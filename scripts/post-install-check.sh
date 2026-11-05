@@ -113,6 +113,37 @@ for name in "${openvpn_stacks[@]}"; do
   fi
 done
 
+# WSS-only must hold at the sockets, even if Docker or firewall rules change later.
+if is_true "${OPENVPN_WSS_ONLY:-true}"; then
+  for name in "${openvpn_stacks[@]}"; do
+    mode="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$name" 2>/dev/null || true)"
+    if [[ "$mode" == host ]]; then
+      pass "$name uses host networking without Docker port publication"
+    else
+      fail "$name WSS-only requires host networking (got: $mode)"
+    fi
+    if [[ "$name" == openvpn-tcp-wss ]]; then
+      port="${TCP_PORT:-1297}"; transport=tcp
+      listeners="$(ss -H -lnt "sport = :$port" 2>/dev/null | awk '{print $4}')"
+    else
+      port="${UDP_PORT:-1194}"; transport=udp
+      listeners="$(ss -H -lnu "sport = :$port" 2>/dev/null | awk '{print $4}')"
+    fi
+    if [[ -n "$listeners" ]] && ! grep -vFx "127.0.0.1:$port" <<<"$listeners" >/dev/null; then
+      pass "$name $transport :$port listens only on 127.0.0.1"
+    else
+      fail "$name raw $transport :$port must listen only on 127.0.0.1 (got: ${listeners:-none})"
+    fi
+  done
+  if [[ "${#openvpn_stacks[@]}" -gt 0 ]]; then
+    if command -v ufw >/dev/null && ufw status verbose 2>/dev/null | grep -F 'Default: deny (incoming)' >/dev/null; then
+      pass "UFW default deny incoming protects manager APIs"
+    else
+      fail "WSS-only requires active UFW with default deny incoming for manager APIs"
+    fi
+  fi
+fi
+
 # Pi-hole must share openvpn-tcp-wss netns — Exited(128) after TCP recreate is a hard fail
 if docker inspect --format '{{.State.Running}}' datagate-pihole 2>/dev/null | grep -q true; then
   pass "datagate-pihole running"
