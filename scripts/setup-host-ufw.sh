@@ -49,6 +49,11 @@ is_true() {
 # Stacks rendered by install-vpn-host.sh; hosts installed before these keys existed run both.
 : "${OPENVPN_TCP:=true}"
 : "${OPENVPN_UDP:=true}"
+: "${OPENVPN_WSS_ONLY:=true}"
+case "$OPENVPN_WSS_ONLY" in
+  true|TRUE|yes|YES|1|on|ON|false|FALSE|no|NO|0|off|OFF) ;;
+  *) die "OPENVPN_WSS_ONLY must be true or false" ;;
+esac
 
 : "${TCP_VPN_SUBNET:?TCP_VPN_SUBNET required}"
 : "${UDP_VPN_SUBNET:?UDP_VPN_SUBNET required}"
@@ -104,8 +109,12 @@ fi
 echo "[ufw] public ingress (nginx / openvpn)"
 ufw_allow allow 80/tcp comment 'http certbot'
 ufw_allow allow 443/tcp comment 'https nginx sni mux'
-is_true "$OPENVPN_UDP" && ufw_allow allow "${UDP_PORT}/udp" comment 'OpenVPN UDP WSS'
-is_true "$OPENVPN_TCP" && ufw_allow allow "${TCP_PORT}/tcp" comment 'OpenVPN TCP'
+if is_true "$OPENVPN_WSS_ONLY"; then
+  echo "[ufw] OpenVPN WSS only: no public raw TCP/UDP listeners or direct manager API access"
+else
+  is_true "$OPENVPN_UDP" && ufw_allow allow "${UDP_PORT}/udp" comment 'OpenVPN UDP'
+  is_true "$OPENVPN_TCP" && ufw_allow allow "${TCP_PORT}/tcp" comment 'OpenVPN TCP'
+fi
 
 if [[ -n "${XRAY_API_HTTPS_PORT:-}" ]]; then
   echo "[ufw] Xray manager HTTPS :${XRAY_API_HTTPS_PORT} (allow-listed IPs)"
@@ -177,9 +186,11 @@ for cidr in "${vpn_cidrs[@]}"; do
   ufw_allow route allow from any to "$cidr" comment "vpn-subnet-in-${cidr}"
 done
 
-echo "[ufw] dashboard → OpenVPN API"
-is_true "$OPENVPN_TCP" && ufw_allow allow from "$DASHBOARD_API_IP" to any port "$TCP_API_PORT" proto tcp comment 'openvpn tcp api dashboard'
-is_true "$OPENVPN_UDP" && ufw_allow allow from "$DASHBOARD_API_IP" to any port "$UDP_API_PORT" proto tcp comment 'openvpn udp api dashboard'
+if ! is_true "$OPENVPN_WSS_ONLY"; then
+  echo "[ufw] dashboard → OpenVPN API (direct access enabled)"
+  is_true "$OPENVPN_TCP" && ufw_allow allow from "$DASHBOARD_API_IP" to any port "$TCP_API_PORT" proto tcp comment 'openvpn tcp api dashboard'
+  is_true "$OPENVPN_UDP" && ufw_allow allow from "$DASHBOARD_API_IP" to any port "$UDP_API_PORT" proto tcp comment 'openvpn udp api dashboard'
+fi
 
 if [[ -n "${PROMETHEUS_IP:-}" && -n "${NODE_EXPORTER_PORT:-}" ]] && is_ipv4 "$PROMETHEUS_IP"; then
   ufw_allow allow from "$PROMETHEUS_IP" to any port "$NODE_EXPORTER_PORT" proto tcp comment 'prometheus'

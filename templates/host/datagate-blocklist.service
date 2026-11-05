@@ -1,0 +1,19 @@
+[Unit]
+Description=DataGate blocked destinations for VPN clients (DOCKER-USER chain)
+Documentation=https://github.com/imkolganov/DataGateVpnInstall
+After=docker.service
+Wants=docker.service
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=ENV_FILE=__INSTALL_HOME__/host/.env
+ExecStart=__INSTALL_HOME__/host/apply-blocklist-firewall.sh
+# DOCKER-USER appears only once dockerd is up — retry until it exists
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+# Destination ranges rejected for VPN clients (OpenVPN and Xray). Hand-curated: list a range only when
+# nothing but the blocked service lives there — shared CDN/cloud ranges stay DNS-only (ru-services.domains).
+# Check coverage after refreshing the domains: ./scripts/blocklist-from-db.sh --check-cidrs
+#
+# MAX messenger (VK AS47764): API, web, auth, media — *.oneme.ru, *.max.ru
+155.212.204.0/23
+# MAX video CDN maxvd*.okcdn.ru (VK AS47764); OK.ru video (vd*.okcdn.ru) is on other ranges
+130.49.226.0/23
+130.49.228.0/22
+130.49.232.0/24
+# Gosuslugi / ESIA (Rostelecom 213.59.252.0/22, e-government AS196747)
+213.59.252.0/22
+109.207.1.0/24
+109.207.8.0/23

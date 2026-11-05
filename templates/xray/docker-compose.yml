@@ -55,6 +55,10 @@ services:
       PIHOLE_BOOTSTRAP_APP_PASSWORD: ${PIHOLE_WEBPASSWORD}
       PIHOLE_BOOTSTRAP_CLIENT_SUBNET_PREFIX: ${XRAY_PIHOLE_CLIENT_SUBNET_PREFIX}
       PIHOLE_BOOTSTRAP_CLIENT_SUBNET_EXCLUDE_PREFIXES: ${XRAY_PIHOLE_EXCLUDE_PREFIXES}
+      # Blocked destinations (installer blocklist/, copied under ./data): routed to a blackhole by SNI.
+      # Empty when BLOCKLIST_ENABLED=false; images without the patch ignore them.
+      XRAY_BLOCKLIST_DOMAINS_FILE: ${XRAY_BLOCKLIST_DOMAINS_FILE:-}
+      XRAY_BLOCKLIST_CIDRS_FILE: ${XRAY_BLOCKLIST_CIDRS_FILE:-}
     ports:
       # Manager API — localhost only; nginx :9443 proxies here for dashboard
       # Use a free host port (not OpenVPN 5010/5011)
