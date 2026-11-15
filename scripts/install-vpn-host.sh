@@ -61,6 +61,17 @@ wss_domains() {
   return 0
 }
 
+# Use the same domain set for DNS readiness and certificate issuance.
+certificate_domains() {
+  {
+    wss_domains
+    [[ -z "${HFS_DOMAIN:-}" ]] || echo "$HFS_DOMAIN"
+    if want_xray && [[ -n "${XRAY_DOMAIN:-}" ]]; then
+      echo "$XRAY_DOMAIN"
+    fi
+  } | awk 'NF && !seen[$0]++'
+}
+
 # Prefer AES-128-GCM when CPU has AES-NI (almost all cloud VPS); ChaCha only without AES-NI.
 host_has_aes_ni() {
   grep -qw aes /proc/cpuinfo 2>/dev/null
@@ -469,6 +480,38 @@ load_env() {
   INSTALLER_SSH_CLIENT_IP="$(detect_ssh_client_ip)"
 }
 
+wait_for_certificate_dns() {
+  local wait_seconds="${DNS_WAIT_SECONDS:-300}" retry_seconds="${DNS_RETRY_SECONDS:-10}"
+  [[ "$wait_seconds" =~ ^(0|[1-9][0-9]*)$ ]] || die "DNS_WAIT_SECONDS must be a non-negative integer"
+  [[ "$retry_seconds" =~ ^[1-9][0-9]*$ ]] || die "DNS_RETRY_SECONDS must be a positive integer"
+  local deadline=$((SECONDS + wait_seconds)) d resolved actual remaining delay
+  local -a domains pending
+  mapfile -t domains < <(certificate_domains)
+  info "Waiting for DNS A-records → $PUBLIC_IP (up to ${wait_seconds}s)"
+  while true; do
+    pending=()
+    for d in "${domains[@]}"; do
+      resolved="$(getent ahostsv4 "$d" 2>/dev/null | awk '{print $1}' | sort -u || true)"
+      if [[ "$resolved" != "$PUBLIC_IP" ]]; then
+        pending+=("$d")
+        actual="${resolved//$'\n'/, }"
+        warn "DNS for $d → ${actual:-NXDOMAIN / no IPv4 address} (expected $PUBLIC_IP)"
+      fi
+    done
+    if [[ "${#pending[@]}" -eq 0 ]]; then
+      info "DNS ready: all certificate domains resolve to $PUBLIC_IP"
+      return 0
+    fi
+    remaining=$((deadline - SECONDS))
+    if ((remaining <= 0)); then
+      die "DNS not ready for ${pending[*]} — create/fix A-records → $PUBLIC_IP, wait for DNS propagation, then retry Install VPN stack on this VM."
+    fi
+    delay="$retry_seconds"
+    ((delay <= remaining)) || delay="$remaining"
+    sleep "$delay"
+  done
+}
+
 preflight() {
   [[ "$SKIP_PREFLIGHT" -eq 1 ]] && { warn "preflight skipped"; return 0; }
   info "Preflight checks"
@@ -477,28 +520,9 @@ preflight() {
     die "/dev/net/tun missing — load tun module: sudo modprobe tun"
   fi
 
-  if [[ "$RENDER_ONLY" -eq 0 ]] && is_true "${ISSUE_CERTS:-true}" && [[ "$SKIP_CERTS" -eq 0 ]]; then
-    local d resolved
-    for d in $(wss_domains); do
-      resolved="$(getent ahostsv4 "$d" 2>/dev/null | awk '{print $1; exit}' || true)"
-      if [[ -z "$resolved" ]]; then
-        warn "DNS for $d does not resolve yet — certbot will fail until A-record → $PUBLIC_IP"
-      elif [[ "$resolved" != "$PUBLIC_IP" ]]; then
-        warn "DNS for $d → $resolved (expected $PUBLIC_IP) — fix A-record before certbot"
-      else
-        info "DNS OK: $d → $resolved"
-      fi
-    done
-    if is_true "${INSTALL_XRAY:-false}"; then
-      resolved="$(getent ahostsv4 "$XRAY_DOMAIN" 2>/dev/null | awk '{print $1; exit}' || true)"
-      if [[ -z "$resolved" ]]; then
-        warn "DNS for $XRAY_DOMAIN does not resolve yet"
-      elif [[ "$resolved" != "$PUBLIC_IP" ]]; then
-        warn "DNS for $XRAY_DOMAIN → $resolved (expected $PUBLIC_IP)"
-      else
-        info "DNS OK: $XRAY_DOMAIN → $resolved"
-      fi
-    fi
+  if [[ "$RENDER_ONLY" -eq 0 && "$SKIP_START" -eq 0 && "$SKIP_CERTS" -eq 0 ]] \
+    && is_true "${START_STACKS:-true}" && is_true "${ISSUE_CERTS:-true}"; then
+    wait_for_certificate_dns
   fi
 }
 
@@ -1291,17 +1315,11 @@ issue_certs() {
   : "${CERTBOT_EMAIL:?CERTBOT_EMAIL required for ISSUE_CERTS}"
 
   local domains
-  mapfile -t domains < <(wss_domains)
-  if [[ -n "${HFS_DOMAIN:-}" ]]; then
-    domains+=("$HFS_DOMAIN")
-  fi
-  if is_true "${INSTALL_XRAY:-false}" && [[ -n "${XRAY_DOMAIN:-}" ]]; then
-    domains+=("$XRAY_DOMAIN")
-  fi
+  mapfile -t domains < <(certificate_domains)
 
   local d
   for d in "${domains[@]}"; do
-    issue_cert_for_domain "$d" || die "certbot failed for $d — check DNS A-record → $PUBLIC_IP and port 80"
+    issue_cert_for_domain "$d" || die "certbot failed for $d — see the Let's Encrypt response above"
   done
 
   # Xray upstream must exist before nginx stream SNI config is applied

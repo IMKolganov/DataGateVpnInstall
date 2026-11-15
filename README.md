@@ -229,6 +229,12 @@ Point all of these to the **new** server `PUBLIC_IP` (not hel):
 
 Wait until `dig +short DOMAIN` returns the new IP, then install.
 
+When stack startup and certificate issuance are enabled, the installer waits up to `DNS_WAIT_SECONDS=300`
+for every certificate domain (selected VPN protocols and optional `HFS_DOMAIN`) to
+resolve only to `PUBLIC_IP`, checking every `DNS_RETRY_SECONDS=10`. Missing or stale
+records stop the install before Certbot. Set `DNS_WAIT_SECONDS=0` for an immediate
+check. After correcting DNS, retry **Install VPN stack** on the existing VM.
+
 ### Unique subnets (never reuse hel)
 
 | Variable | hel-1 (taken) | next host example |
@@ -406,6 +412,7 @@ Local smoke test (developer machine):
 
 ```bash
 ./scripts/smoke-test-local.sh
+./scripts/smoke-test-dns-preflight.sh
 ./scripts/verify-installer.sh
 ./scripts/docker-test-ssh-console.sh   # real sshd + PAM as root in ubuntu:24.04 (needs docker + network)
 ```
