@@ -356,6 +356,9 @@ echo "=== ssh scenario smoke ==="
 echo "=== installer result smoke ==="
 bash "$ROOT/scripts/smoke-test-install-result.sh" || FAIL=1
 
+echo "=== DNS preflight smoke ==="
+bash "$ROOT/scripts/smoke-test-dns-preflight.sh" || FAIL=1
+
 if [[ "$FAIL" -eq 0 ]]; then
   echo "=== ALL SMOKE TESTS PASSED ==="
 else
