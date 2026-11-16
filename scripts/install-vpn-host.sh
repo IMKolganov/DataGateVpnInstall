@@ -480,6 +480,22 @@ load_env() {
   INSTALLER_SSH_CLIENT_IP="$(detect_ssh_client_ip)"
 }
 
+# IPv4 addresses of $1 as a public resolver sees them (what Let's Encrypt and clients see). The VM's own resolver can keep a
+# replaced A-record for its whole TTL (30 min on "Automatic"), so it must not be the only judge. Empty when no public resolver answers.
+dns_public_lookup() {
+  local d="$1" ns out
+  for ns in ${DNS_PUBLIC_RESOLVERS:-1.1.1.1 8.8.8.8}; do
+    if command -v dig >/dev/null 2>&1; then
+      out="$(dig +short +time=3 +tries=1 A "$d" "@$ns" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u || true)"
+    else
+      out="$(curl -fsS -m 5 -H 'accept: application/dns-json' "https://$ns/dns-query?name=$d&type=A" 2>/dev/null \
+        | grep -oE '"data":"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -u || true)"
+    fi
+    [[ -n "$out" ]] && { printf '%s\n' "$out"; return 0; }
+  done
+  return 0
+}
+
 wait_for_certificate_dns() {
   local wait_seconds="${DNS_WAIT_SECONDS:-300}" retry_seconds="${DNS_RETRY_SECONDS:-10}"
   [[ "$wait_seconds" =~ ^(0|[1-9][0-9]*)$ ]] || die "DNS_WAIT_SECONDS must be a non-negative integer"
@@ -492,6 +508,10 @@ wait_for_certificate_dns() {
     pending=()
     for d in "${domains[@]}"; do
       resolved="$(getent ahostsv4 "$d" 2>/dev/null | awk '{print $1}' | sort -u || true)"
+      if [[ "$resolved" != "$PUBLIC_IP" && "$(dns_public_lookup "$d")" == "$PUBLIC_IP" ]]; then
+        info "DNS for $d → $PUBLIC_IP at public resolvers (this VM's resolver still has ${resolved//$'\n'/, }: stale cache, not blocking)"
+        resolved="$PUBLIC_IP"
+      fi
       if [[ "$resolved" != "$PUBLIC_IP" ]]; then
         pending+=("$d")
         actual="${resolved//$'\n'/, }"
