@@ -25,7 +25,7 @@ run_case() (
     local address="$PUBLIC_IP"
     case "$scenario" in
       missing|propagating|timeout) return 2 ;;
-      wrong) address=203.0.113.51 ;;
+      wrong|stale-local) address=203.0.113.51 ;;
       multiple) printf '%s STREAM\n' 203.0.113.51 ;;
       hfs-missing) [[ "$2" != files.example.com ]] || return 2 ;;
       udp-missing) [[ "$2" != udp.example.com ]] || return 2 ;;
@@ -34,6 +34,7 @@ run_case() (
     esac
     printf '%s STREAM\n%s DGRAM\n%s RAW\n' "$address" "$address" "$address"
   }
+  dns_public_lookup() { [[ "$scenario" == stale-local ]] && echo "$PUBLIC_IP"; return 0; }
   sleep() {
     attempts=$((attempts + 1))
     if [[ "$scenario" == timeout ]]; then
@@ -100,6 +101,7 @@ expect_failure() {
 }
 
 expect_success ready 'DNS ready'
+expect_success stale-local 'stale cache, not blocking'
 expect_success propagating 'sleeps=1'
 expect_success unselected 'DNS ready'
 expect_success udp-only 'DNS ready'
